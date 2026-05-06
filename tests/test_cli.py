@@ -120,6 +120,7 @@ def test_run_requires_cell_or_all():
 # fail with "unrecognized arguments: --human". Fixed by moving --human onto a
 # parents= shared parser used by every subparser.
 
+
 def test_human_flag_after_subcommand_indents_output():
     rc, out = _run_raw("init", "--human")
     assert rc == 0
