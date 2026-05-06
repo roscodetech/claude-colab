@@ -1,0 +1,23 @@
+{
+  "name": "claude-colab",
+  "version": "0.1.0",
+  "description": "Drive Google Colab from Claude Code — CRUD notebooks via Drive API, run cells via headed Chrome, capture text and image output. Includes planner/executor/debugger subagents.",
+  "author": {
+    "name": "Roscoe",
+    "url": "https://roscodetech.com"
+  },
+  "homepage": "https://github.com/roscoetech/claude-colab",
+  "repository": "https://github.com/roscoetech/claude-colab",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "google-colab",
+    "jupyter",
+    "notebooks",
+    "google-drive",
+    "playwright",
+    "automation",
+    "ml",
+    "data-science"
+  ]
+}

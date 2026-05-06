@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+node_modules/
+
+# Local-only — never commit
+*.token.json
+*credentials*.json
+chrome-profile/
+runs/
+.DS_Store
