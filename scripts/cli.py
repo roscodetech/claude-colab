@@ -203,11 +203,17 @@ def cmd_selftest(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="claude-colab")
-    p.add_argument("--human", action="store_true", help="human-readable output")
+    p = argparse.ArgumentParser(
+        prog="claude-colab",
+        description="Drive Google Colab from Claude Code. Pass --human after a subcommand for indented output.",
+    )
+    # Parent parser: cross-cutting flags every subcommand inherits via parents=.
+    # Kept off the top-level parser so the subparser's default doesn't clobber it.
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument("--human", action="store_true", help="human-readable output")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("init")
+    sp = sub.add_parser("init", parents=[shared])
     sp.add_argument("--scope-folder")
     sp.add_argument("--scope-full", action="store_true")
     sp.add_argument("--images", action="store_true")
@@ -217,32 +223,32 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reset", action="store_true")
     sp.set_defaults(func=cmd_init)
 
-    sp = sub.add_parser("auth")
+    sp = sub.add_parser("auth", parents=[shared])
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_auth)
 
-    sp = sub.add_parser("login")
+    sp = sub.add_parser("login", parents=[shared])
     sp.add_argument("--timeout", type=int, default=300)
     sp.set_defaults(func=cmd_login)
 
-    sp = sub.add_parser("list")
+    sp = sub.add_parser("list", parents=[shared])
     sp.add_argument("--limit", type=int, default=50)
     sp.set_defaults(func=cmd_list)
 
-    sp = sub.add_parser("new")
+    sp = sub.add_parser("new", parents=[shared])
     sp.add_argument("name")
     sp.set_defaults(func=cmd_new)
 
-    sp = sub.add_parser("delete")
+    sp = sub.add_parser("delete", parents=[shared])
     sp.add_argument("file_id")
     sp.add_argument("--hard", action="store_true")
     sp.set_defaults(func=cmd_delete)
 
-    sp = sub.add_parser("show")
+    sp = sub.add_parser("show", parents=[shared])
     sp.add_argument("file_id")
     sp.set_defaults(func=cmd_show)
 
-    sp = sub.add_parser("edit")
+    sp = sub.add_parser("edit", parents=[shared])
     sp.add_argument("file_id")
     sp.add_argument("action", choices=["add", "edit", "delete"])
     sp.add_argument("--cell", help="cell id or index for edit/delete")
@@ -252,11 +258,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--source-file", help="path to file containing source")
     sp.set_defaults(func=cmd_edit)
 
-    sp = sub.add_parser("open")
+    sp = sub.add_parser("open", parents=[shared])
     sp.add_argument("file_id")
     sp.set_defaults(func=cmd_open)
 
-    sp = sub.add_parser("run")
+    sp = sub.add_parser("run", parents=[shared])
     sp.add_argument("file_id")
     sp.add_argument("--cell", help="cell id, or 'all'")
     sp.add_argument("--all", action="store_true")
@@ -264,17 +270,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timeout", type=int, default=600)
     sp.set_defaults(func=cmd_run)
 
-    sp = sub.add_parser("output")
+    sp = sub.add_parser("output", parents=[shared])
     sp.add_argument("file_id")
     sp.add_argument("cell")
     sp.set_defaults(func=cmd_output)
 
-    sp = sub.add_parser("scope")
+    sp = sub.add_parser("scope", parents=[shared])
     sp.add_argument("--folder")
     sp.add_argument("--full", action="store_true")
     sp.set_defaults(func=cmd_scope)
 
-    sp = sub.add_parser("selftest")
+    sp = sub.add_parser("selftest", parents=[shared])
     sp.set_defaults(func=cmd_selftest)
 
     return p

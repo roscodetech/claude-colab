@@ -22,6 +22,14 @@ def _run(*argv) -> tuple[int, dict]:
     return rc, data
 
 
+def _run_raw(*argv) -> tuple[int, str]:
+    """Like _run but returns raw stdout — for asserting on JSON formatting."""
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = cli.main(list(argv))
+    return rc, buf.getvalue()
+
+
 def test_init_default_returns_config():
     rc, data = _run("init")
     assert rc == 0
@@ -105,3 +113,28 @@ def test_edit_requires_source_for_add():
 def test_run_requires_cell_or_all():
     rc, _ = _run("run", "abc")
     assert rc != 0
+
+
+# --- regression: --human must work AFTER the subcommand
+# Originally only declared on the top-level parser, which made `colab init --human`
+# fail with "unrecognized arguments: --human". Fixed by moving --human onto a
+# parents= shared parser used by every subparser.
+
+
+def test_human_flag_after_subcommand_indents_output():
+    rc, out = _run_raw("init", "--human")
+    assert rc == 0
+    # Indented JSON has newlines; compact JSON does not.
+    assert "\n" in out
+
+
+def test_no_human_flag_emits_compact_json():
+    rc, out = _run_raw("init")
+    assert rc == 0
+    assert "\n" not in out.rstrip()
+
+
+def test_human_flag_works_on_scope_too():
+    rc, out = _run_raw("scope", "--human")
+    assert rc == 0
+    assert "\n" in out
