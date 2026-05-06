@@ -22,6 +22,7 @@ NBFORMAT_MINOR = 5  # required for stable cell ids
 
 # ---------- Construction ----------
 
+
 def empty_notebook() -> nbformat.NotebookNode:
     nb = new_notebook()
     nb.nbformat = NBFORMAT_VERSION
@@ -42,6 +43,7 @@ def empty_notebook_bytes() -> bytes:
 
 # ---------- Drive round-trip ----------
 
+
 def read(file_id: str) -> tuple[nbformat.NotebookNode, str | None]:
     """Fetch from Drive and parse. Returns (notebook, head_revision_id)."""
     raw = drive.get_notebook_bytes(file_id)
@@ -52,13 +54,16 @@ def read(file_id: str) -> tuple[nbformat.NotebookNode, str | None]:
     return nb, meta.get("headRevisionId")
 
 
-def write(file_id: str, nb: nbformat.NotebookNode, expected_revision: str | None = None) -> dict[str, Any]:
+def write(
+    file_id: str, nb: nbformat.NotebookNode, expected_revision: str | None = None
+) -> dict[str, Any]:
     """Serialize and upload. Pass expected_revision for optimistic locking."""
     payload = nbformat.writes(nb).encode("utf-8")
     return drive.update_notebook(file_id, payload, expected_revision=expected_revision)
 
 
 # ---------- Cell ops ----------
+
 
 def _find_idx(nb: nbformat.NotebookNode, cell_ref: str | int) -> int:
     """Resolve a cell_id (str) or index (int) to an integer index."""
@@ -131,6 +136,7 @@ def reorder(nb: nbformat.NotebookNode, cell_ids: list[str]) -> None:
 
 # ---------- Inspection ----------
 
+
 def summarize(nb: nbformat.NotebookNode, source_lines: int = 2) -> list[dict[str, Any]]:
     """Compact representation for agent context — id, type, first N source lines."""
     out = []
@@ -139,14 +145,18 @@ def summarize(nb: nbformat.NotebookNode, source_lines: int = 2) -> list[dict[str
         if isinstance(src, list):
             src = "".join(src)
         head = "\n".join(src.splitlines()[:source_lines])
-        out.append({
-            "idx": i,
-            "id": cell.get("id"),
-            "type": cell.get("cell_type"),
-            "source_head": head,
-            "has_output": bool(cell.get("outputs")) if cell.get("cell_type") == "code" else False,
-            "execution_count": cell.get("execution_count"),
-        })
+        out.append(
+            {
+                "idx": i,
+                "id": cell.get("id"),
+                "type": cell.get("cell_type"),
+                "source_head": head,
+                "has_output": bool(cell.get("outputs"))
+                if cell.get("cell_type") == "code"
+                else False,
+                "execution_count": cell.get("execution_count"),
+            }
+        )
     return out
 
 

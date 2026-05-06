@@ -26,6 +26,7 @@ else:
 
 # ---------- helpers ----------
 
+
 def _emit(data: Any, human: bool = False) -> int:
     if human:
         if isinstance(data, (dict, list)):
@@ -47,6 +48,7 @@ def _fail(msg: str, code: int = 1, human: bool = False, **extra: Any) -> int:
 
 
 # ---------- subcommands ----------
+
 
 def cmd_init(args: argparse.Namespace) -> int:
     """First-run wizard. Idempotent; --reset wipes back to defaults."""
@@ -104,12 +106,15 @@ def cmd_delete(args: argparse.Namespace) -> int:
 def cmd_show(args: argparse.Namespace) -> int:
     """Summarize cells in a notebook — for agents inspecting before editing."""
     nb, rev = notebook.read(args.file_id)
-    return _emit({
-        "status": "ok",
-        "file_id": args.file_id,
-        "revision": rev,
-        "cells": notebook.summarize(nb),
-    }, args.human)
+    return _emit(
+        {
+            "status": "ok",
+            "file_id": args.file_id,
+            "revision": rev,
+            "cells": notebook.summarize(nb),
+        },
+        args.human,
+    )
 
 
 def cmd_edit(args: argparse.Namespace) -> int:
@@ -141,7 +146,9 @@ def cmd_edit(args: argparse.Namespace) -> int:
         return _fail(f"unknown action: {args.action}", human=args.human)
 
     meta = notebook.write(args.file_id, nb, expected_revision=rev)
-    return _emit({"status": "ok", "cell_id": cid, "revision": meta.get("headRevisionId")}, args.human)
+    return _emit(
+        {"status": "ok", "cell_id": cid, "revision": meta.get("headRevisionId")}, args.human
+    )
 
 
 def cmd_open(args: argparse.Namespace) -> int:
@@ -154,7 +161,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         return _emit({"status": "ok", "results": results}, args.human)
     if args.cell is None:
         return _fail("provide --cell <id> or --all", human=args.human)
-    res = browser.run_one_cell(args.file_id, args.cell, runtime=args.runtime, timeout_sec=args.timeout)
+    res = browser.run_one_cell(
+        args.file_id, args.cell, runtime=args.runtime, timeout_sec=args.timeout
+    )
     return _emit({"status": "ok", "result": res}, args.human)
 
 
@@ -171,19 +180,27 @@ def cmd_scope(args: argparse.Namespace) -> int:
         cfg = config.update(drive_scope_folder=args.folder, drive_scope_full=False)
     else:
         cfg = config.load()
-    return _emit({"status": "ok", "scope": {
-        "folder": cfg.get("drive_scope_folder"),
-        "full": cfg.get("drive_scope_full"),
-    }}, args.human)
+    return _emit(
+        {
+            "status": "ok",
+            "scope": {
+                "folder": cfg.get("drive_scope_folder"),
+                "full": cfg.get("drive_scope_full"),
+            },
+        },
+        args.human,
+    )
 
 
 def cmd_selftest(args: argparse.Namespace) -> int:
     """Smoke-test: create canary, run print/plot/error cells, report broken selectors."""
     from . import selftest
+
     return _emit(selftest.run(), args.human)
 
 
 # ---------- argparse ----------
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="claude-colab")

@@ -6,7 +6,6 @@ Doesn't actually launch Chromium — just exercises the lock primitive.
 from __future__ import annotations
 
 import threading
-import time
 
 import pytest
 
@@ -17,7 +16,6 @@ def test_acquire_lock_blocks_concurrent_holder():
     """Second acquirer raises ColabBusyError immediately."""
     held = threading.Event()
     release = threading.Event()
-    error: list[Exception] = []
 
     def hold_lock():
         with browser.acquire_lock(timeout=5):
@@ -28,9 +26,8 @@ def test_acquire_lock_blocks_concurrent_holder():
     t.start()
     held.wait(timeout=2)
 
-    with pytest.raises(browser.ColabBusyError):
-        with browser.acquire_lock(timeout=0.5):
-            pytest.fail("should not have acquired")
+    with pytest.raises(browser.ColabBusyError), browser.acquire_lock(timeout=0.5):
+        pytest.fail("should not have acquired")
 
     release.set()
     t.join()

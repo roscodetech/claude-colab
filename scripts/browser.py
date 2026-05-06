@@ -11,16 +11,16 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import json
 import re
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from filelock import FileLock, Timeout
 
-from . import config, paths as _paths, selectors
+from . import config, selectors
+from . import paths as _paths
 from .paths import ensure_home
 
 # Default cell timeout (sec). Colab can pause cells for >10 min on heavy work,
@@ -71,6 +71,7 @@ def acquire_lock(timeout: float = 1.0) -> Iterator[None]:
 
 # ---------- Browser session ----------
 
+
 class ColabSession:
     """Wraps a persistent Chromium context driving a single Colab tab.
 
@@ -88,7 +89,7 @@ class ColabSession:
         self._ctx = None
         self.page = None
 
-    def __enter__(self) -> "ColabSession":
+    def __enter__(self) -> ColabSession:
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
@@ -163,7 +164,9 @@ class ColabSession:
                 break
             time.sleep(0.4)
         else:
-            return RunResult(cell_id=cell_id, status="timeout", duration_ms=int((time.time() - start) * 1000))
+            return RunResult(
+                cell_id=cell_id, status="timeout", duration_ms=int((time.time() - start) * 1000)
+            )
 
         return self._collect_output(cell_id, cell, start)
 
@@ -214,9 +217,7 @@ class ColabSession:
         out_dir = _paths.RUNS_DIR / self.file_id / cell_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        srcs = cell.locator(selectors.CELL_OUTPUT_IMAGE).evaluate_all(
-            "els => els.map(e => e.src)"
-        )
+        srcs = cell.locator(selectors.CELL_OUTPUT_IMAGE).evaluate_all("els => els.map(e => e.src)")
         saved: list[str] = []
         for i, src in enumerate(srcs):
             if not src:
@@ -243,18 +244,19 @@ def _decode_img_src(src: str) -> bytes | None:
 
 # ---------- Public entrypoints ----------
 
-def run_one_cell(file_id: str, cell_id: str, runtime: str | None = None, timeout_sec: int = DEFAULT_RUN_TIMEOUT) -> dict[str, Any]:
-    with acquire_lock():
-        with ColabSession(file_id, runtime=runtime) as sess:
-            sess.connect_runtime(runtime)
-            return sess.run_cell(cell_id, timeout_sec=timeout_sec).to_dict()
+
+def run_one_cell(
+    file_id: str, cell_id: str, runtime: str | None = None, timeout_sec: int = DEFAULT_RUN_TIMEOUT
+) -> dict[str, Any]:
+    with acquire_lock(), ColabSession(file_id, runtime=runtime) as sess:
+        sess.connect_runtime(runtime)
+        return sess.run_cell(cell_id, timeout_sec=timeout_sec).to_dict()
 
 
 def run_all_cells(file_id: str, runtime: str | None = None) -> list[dict[str, Any]]:
-    with acquire_lock():
-        with ColabSession(file_id, runtime=runtime) as sess:
-            sess.connect_runtime(runtime)
-            return [r.to_dict() for r in sess.run_all()]
+    with acquire_lock(), ColabSession(file_id, runtime=runtime) as sess:
+        sess.connect_runtime(runtime)
+        return [r.to_dict() for r in sess.run_all()]
 
 
 def open_only(file_id: str) -> dict[str, Any]:

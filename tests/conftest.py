@@ -6,7 +6,6 @@ so we never read or write the real user config / token.
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
 

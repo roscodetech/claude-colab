@@ -32,6 +32,7 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 # ---------- Drive OAuth ----------
 
+
 def _load_credentials() -> Credentials | None:
     if not _paths.DRIVE_TOKEN_PATH.exists():
         return None
@@ -73,9 +74,7 @@ def authorize_drive(force: bool = False) -> Credentials:
             "Then re-run /colab-auth."
         )
 
-    flow = InstalledAppFlow.from_client_secrets_file(
-        str(_paths.DRIVE_CREDENTIALS_PATH), SCOPES
-    )
+    flow = InstalledAppFlow.from_client_secrets_file(str(_paths.DRIVE_CREDENTIALS_PATH), SCOPES)
     # port=0 → OS picks a free port; flow opens system browser, runs a tiny
     # local server to catch the redirect. No manual code-paste.
     creds = flow.run_local_server(port=0)
@@ -90,6 +89,7 @@ def get_drive_service() -> Any:
 
 
 # ---------- Colab browser login ----------
+
 
 # Inline import — Playwright is heavy and only needed for browser login.
 # Keeps `colab-auth` (Drive only) snappy.

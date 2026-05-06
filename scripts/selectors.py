@@ -20,11 +20,11 @@ RUNTIME_SAVE = 'paper-button[dialog-confirm], button:has-text("Save")'
 # `data-cell-id` attribute that maps to the nbformat id (Colab adds it on load).
 CELL_BY_ID = 'div.cell[data-cell-id="{cell_id}"]'
 CELL_RUN_BUTTON = 'colab-run-button, [aria-label*="Run cell"]'
-CELL_OUTPUT_AREA = '.output-area, .output_area'
-CELL_OUTPUT_TEXT = '.output-area .output-content, .output-content'
-CELL_OUTPUT_IMAGE = '.output-area img, .output_area img'
-CELL_ERROR = '.output-area .error-output, .output_subarea.output_error'
-CELL_BUSY = '.cell.running, .cell[busy]'
+CELL_OUTPUT_AREA = ".output-area, .output_area"
+CELL_OUTPUT_TEXT = ".output-area .output-content, .output-content"
+CELL_OUTPUT_IMAGE = ".output-area img, .output_area img"
+CELL_ERROR = ".output-area .error-output, .output_subarea.output_error"
+CELL_BUSY = ".cell.running, .cell[busy]"
 
 # "Run all" lives under the Runtime menu
 RUN_ALL_MENU_ITEM = 'text="Run all"'
@@ -33,4 +33,4 @@ RUN_ALL_MENU_ITEM = 'text="Run all"'
 SIGNED_IN_PROBE = 'a[aria-label*="Google Account"]'
 
 # Save indicator (Colab autosaves; we wait for "Saved" before closing)
-SAVE_STATUS_SAVED = 'text=/All changes saved/i'
+SAVE_STATUS_SAVED = "text=/All changes saved/i"

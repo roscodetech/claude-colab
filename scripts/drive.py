@@ -13,7 +13,6 @@ from __future__ import annotations
 import io
 from typing import Any
 
-from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 from . import config
@@ -29,6 +28,7 @@ NOTEBOOK_MIMES = (NOTEBOOK_MIME, JUPYTER_MIME)
 
 # ---------- Folder management ----------
 
+
 def ensure_folder(name: str | None = None) -> str | None:
     """Find or create the scope folder. Returns folder_id, or None if scope is full Drive.
 
@@ -43,10 +43,7 @@ def ensure_folder(name: str | None = None) -> str | None:
         return None
 
     svc = get_drive_service()
-    q = (
-        f"name = '{folder_name}' and mimeType = '{FOLDER_MIME}' "
-        "and trashed = false"
-    )
+    q = f"name = '{folder_name}' and mimeType = '{FOLDER_MIME}' and trashed = false"
     res = svc.files().list(q=q, fields="files(id, name)", pageSize=1).execute()
     files = res.get("files", [])
     if files:
@@ -59,6 +56,7 @@ def ensure_folder(name: str | None = None) -> str | None:
 
 
 # ---------- Notebook CRUD ----------
+
 
 def list_notebooks(
     folder_id: str | None = None,
@@ -75,16 +73,22 @@ def list_notebooks(
         parts.append(f"'{folder_id}' in parents")
     q = " and ".join(parts)
 
-    res = svc.files().list(
-        q=q,
-        fields="files(id, name, modifiedTime, headRevisionId, webViewLink, mimeType)",
-        pageSize=page_size,
-        orderBy="modifiedTime desc",
-    ).execute()
+    res = (
+        svc.files()
+        .list(
+            q=q,
+            fields="files(id, name, modifiedTime, headRevisionId, webViewLink, mimeType)",
+            pageSize=page_size,
+            orderBy="modifiedTime desc",
+        )
+        .execute()
+    )
     return res.get("files", [])
 
 
-def create_notebook(name: str, folder_id: str | None = None, content_bytes: bytes | None = None) -> dict[str, Any]:
+def create_notebook(
+    name: str, folder_id: str | None = None, content_bytes: bytes | None = None
+) -> dict[str, Any]:
     """Create a new Colab notebook. Returns the file metadata dict."""
     svc = get_drive_service()
     if folder_id is None:
@@ -100,6 +104,7 @@ def create_notebook(name: str, folder_id: str | None = None, content_bytes: byte
     if content_bytes is None:
         # Empty notebook — single empty code cell, nbformat 4.5.
         from .notebook import empty_notebook_bytes
+
         content_bytes = empty_notebook_bytes()
 
     media = MediaIoBaseUpload(
@@ -107,11 +112,15 @@ def create_notebook(name: str, folder_id: str | None = None, content_bytes: byte
         mimetype=JUPYTER_MIME,
         resumable=False,
     )
-    created = svc.files().create(
-        body=meta,
-        media_body=media,
-        fields="id, name, modifiedTime, headRevisionId, webViewLink",
-    ).execute()
+    created = (
+        svc.files()
+        .create(
+            body=meta,
+            media_body=media,
+            fields="id, name, modifiedTime, headRevisionId, webViewLink",
+        )
+        .execute()
+    )
     return created
 
 
@@ -153,11 +162,15 @@ def update_notebook(
         mimetype=JUPYTER_MIME,
         resumable=False,
     )
-    updated = svc.files().update(
-        fileId=file_id,
-        media_body=media,
-        fields="id, name, modifiedTime, headRevisionId",
-    ).execute()
+    updated = (
+        svc.files()
+        .update(
+            fileId=file_id,
+            media_body=media,
+            fields="id, name, modifiedTime, headRevisionId",
+        )
+        .execute()
+    )
     return updated
 
 
@@ -172,10 +185,14 @@ def delete_notebook(file_id: str, hard: bool = False) -> None:
 
 def get_metadata(file_id: str) -> dict[str, Any]:
     svc = get_drive_service()
-    return svc.files().get(
-        fileId=file_id,
-        fields="id, name, modifiedTime, headRevisionId, webViewLink, parents, mimeType",
-    ).execute()
+    return (
+        svc.files()
+        .get(
+            fileId=file_id,
+            fields="id, name, modifiedTime, headRevisionId, webViewLink, parents, mimeType",
+        )
+        .execute()
+    )
 
 
 def find_by_name(name: str, folder_id: str | None = None) -> dict[str, Any] | None:

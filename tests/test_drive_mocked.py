@@ -24,12 +24,32 @@ def mock_service():
 
 def test_list_notebooks_filters_by_folder_and_mime(mock_service):
     mock_service.files().list().execute.return_value = {
-        "files": [{"id": "abc", "name": "x.ipynb", "modifiedTime": "now", "headRevisionId": "r1", "webViewLink": "u", "mimeType": "application/x-ipynb+json"}]
+        "files": [
+            {
+                "id": "abc",
+                "name": "x.ipynb",
+                "modifiedTime": "now",
+                "headRevisionId": "r1",
+                "webViewLink": "u",
+                "mimeType": "application/x-ipynb+json",
+            }
+        ]
     }
     # Pre-prime ensure_folder by configuring mock for list call (folder lookup).
     mock_service.files().list().execute.side_effect = [
         {"files": [{"id": "FOLDER_ID", "name": "claude-colab"}]},  # ensure_folder call
-        {"files": [{"id": "abc", "name": "x.ipynb", "modifiedTime": "now", "headRevisionId": "r1", "webViewLink": "u", "mimeType": "application/x-ipynb+json"}]},
+        {
+            "files": [
+                {
+                    "id": "abc",
+                    "name": "x.ipynb",
+                    "modifiedTime": "now",
+                    "headRevisionId": "r1",
+                    "webViewLink": "u",
+                    "mimeType": "application/x-ipynb+json",
+                }
+            ]
+        },
     ]
 
     files = drive.list_notebooks()
@@ -42,7 +62,11 @@ def test_create_notebook_adds_ipynb_extension(mock_service):
         "files": [{"id": "FOLDER_ID", "name": "claude-colab"}]
     }
     mock_service.files().create().execute.return_value = {
-        "id": "newid", "name": "thing.ipynb", "modifiedTime": "now", "headRevisionId": "r1", "webViewLink": "u"
+        "id": "newid",
+        "name": "thing.ipynb",
+        "modifiedTime": "now",
+        "headRevisionId": "r1",
+        "webViewLink": "u",
     }
 
     res = drive.create_notebook("thing")

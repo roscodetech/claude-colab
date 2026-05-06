@@ -51,7 +51,7 @@ def test_edit_cell_clears_outputs():
 def test_delete_cell_by_id_and_index():
     nb = notebook.empty_notebook()
     a = notebook.add_cell(nb, "a")
-    b = notebook.add_cell(nb, "b")
+    notebook.add_cell(nb, "b")
     assert len(nb.cells) == 3
 
     notebook.delete_cell(nb, a)

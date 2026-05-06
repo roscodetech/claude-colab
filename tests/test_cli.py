@@ -8,11 +8,7 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 from contextlib import redirect_stdout
-from unittest.mock import patch
-
-import pytest
 
 from scripts import cli
 
@@ -68,7 +64,9 @@ def test_list_passes_through_drive(monkeypatch):
 
 
 def test_new_calls_create(monkeypatch):
-    monkeypatch.setattr(cli.drive, "create_notebook", lambda name: {"id": "nid", "name": f"{name}.ipynb"})
+    monkeypatch.setattr(
+        cli.drive, "create_notebook", lambda name: {"id": "nid", "name": f"{name}.ipynb"}
+    )
     rc, data = _run("new", "thing")
     assert rc == 0
     assert data["notebook"]["id"] == "nid"
@@ -76,6 +74,7 @@ def test_new_calls_create(monkeypatch):
 
 def test_show_summarizes(monkeypatch):
     from scripts import notebook as nbmod
+
     nb = nbmod.empty_notebook()
     monkeypatch.setattr(cli.notebook, "read", lambda fid: (nb, "rev1"))
     rc, data = _run("show", "abc")
@@ -86,9 +85,12 @@ def test_show_summarizes(monkeypatch):
 
 def test_edit_add_with_source(monkeypatch):
     from scripts import notebook as nbmod
+
     nb = nbmod.empty_notebook()
     monkeypatch.setattr(cli.notebook, "read", lambda fid: (nb, "rev1"))
-    monkeypatch.setattr(cli.notebook, "write", lambda fid, n, expected_revision=None: {"headRevisionId": "rev2"})
+    monkeypatch.setattr(
+        cli.notebook, "write", lambda fid, n, expected_revision=None: {"headRevisionId": "rev2"}
+    )
     rc, data = _run("edit", "abc", "add", "--source", "print(1)")
     assert rc == 0
     assert data["status"] == "ok"
