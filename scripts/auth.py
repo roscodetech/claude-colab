@@ -22,23 +22,51 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+from . import config
 from . import paths as _paths
 from .paths import ensure_home
 
-# Drive scopes — file-level only (we only touch files we created or that the
-# user explicitly opens). Avoids the much scarier `drive` (full Drive) scope.
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+# Two scope levels, picked by config.oauth_scope:
+#   "file" → drive.file: only files this app creates or that are explicitly
+#            opened with it via the Drive picker. Default — narrowest, safest.
+#   "full" → drive: full read+write access to every file in the user's Drive.
+#            Required to discover and edit notebooks created via the Colab UI.
+_SCOPE_FILE = ["https://www.googleapis.com/auth/drive.file"]
+_SCOPE_FULL = ["https://www.googleapis.com/auth/drive"]
+_VALID_SCOPES = ("file", "full")
+
+
+def get_scopes() -> list[str]:
+    """Resolve OAuth scopes from current config."""
+    return _SCOPE_FULL if config.load().get("oauth_scope") == "full" else _SCOPE_FILE
+
+
+def set_oauth_scope(scope: str) -> dict[str, Any]:
+    """Persist a new OAuth scope and clear the existing token so the next
+    Drive call re-prompts the user for the new consent.
+
+    Raises ValueError on unknown scope.
+    """
+    if scope not in _VALID_SCOPES:
+        raise ValueError(f"unknown oauth_scope: {scope!r} (use one of {_VALID_SCOPES})")
+    cfg = config.update(oauth_scope=scope)
+    # Existing token has the old scopes baked in. Wider scope can't be granted
+    # by a refresh — the user must re-consent. Removing the token forces the
+    # next authorize_drive() call into the full flow.
+    if _paths.DRIVE_TOKEN_PATH.exists():
+        _paths.DRIVE_TOKEN_PATH.unlink()
+    return cfg
 
 
 # ---------- Drive OAuth ----------
 
 
-def _load_credentials() -> Credentials | None:
+def _load_credentials(scopes: list[str]) -> Credentials | None:
     if not _paths.DRIVE_TOKEN_PATH.exists():
         return None
     with _paths.DRIVE_TOKEN_PATH.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    return Credentials.from_authorized_user_info(data, SCOPES)
+    return Credentials.from_authorized_user_info(data, scopes)
 
 
 def _save_credentials(creds: Credentials) -> None:
@@ -49,18 +77,29 @@ def _save_credentials(creds: Credentials) -> None:
         os.chmod(_paths.DRIVE_TOKEN_PATH, 0o600)
 
 
+def _scopes_match(creds: Credentials, target: list[str]) -> bool:
+    """True if persisted creds cover every scope in target."""
+    have = set(creds.scopes or [])
+    return set(target).issubset(have)
+
+
 def authorize_drive(force: bool = False) -> Credentials:
-    """Run installed-app OAuth flow. Re-uses refresh token unless force=True."""
+    """Run installed-app OAuth flow. Re-uses refresh token unless force=True
+    or the persisted token's scopes don't cover the currently-configured scope.
+    """
     ensure_home()
+    target_scopes = get_scopes()
 
     if not force:
-        creds = _load_credentials()
-        if creds and creds.valid:
-            return creds
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            _save_credentials(creds)
-            return creds
+        creds = _load_credentials(target_scopes)
+        if creds and _scopes_match(creds, target_scopes):
+            if creds.valid:
+                return creds
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                _save_credentials(creds)
+                return creds
+        # Either no creds, or scopes don't match config — fall through to re-auth.
 
     if not _paths.DRIVE_CREDENTIALS_PATH.exists():
         raise SystemExit(
@@ -74,7 +113,9 @@ def authorize_drive(force: bool = False) -> Credentials:
             "Then re-run /colab-auth."
         )
 
-    flow = InstalledAppFlow.from_client_secrets_file(str(_paths.DRIVE_CREDENTIALS_PATH), SCOPES)
+    flow = InstalledAppFlow.from_client_secrets_file(
+        str(_paths.DRIVE_CREDENTIALS_PATH), target_scopes
+    )
     # port=0 → OS picks a free port; flow opens system browser, runs a tiny
     # local server to catch the redirect. No manual code-paste.
     creds = flow.run_local_server(port=0)

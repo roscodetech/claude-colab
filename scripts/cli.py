@@ -174,22 +174,34 @@ def cmd_output(args: argparse.Namespace) -> int:
 
 
 def cmd_scope(args: argparse.Namespace) -> int:
+    cfg = config.load()
+    note: str | None = None
+
+    if args.oauth is not None:
+        if args.oauth not in ("file", "full"):
+            return _fail(f"--oauth must be 'file' or 'full', got {args.oauth!r}", human=args.human)
+        if args.oauth != cfg.get("oauth_scope", "file"):
+            cfg = auth.set_oauth_scope(args.oauth)
+            # Re-auth doesn't auto-trigger here — happens lazily on next Drive
+            # call. Surface the prompt explicitly so users know to expect it.
+            note = "OAuth scope changed; re-run /colab-auth to grant new consent"
+
     if args.full:
         cfg = config.update(drive_scope_full=True)
     elif args.folder is not None:
         cfg = config.update(drive_scope_folder=args.folder, drive_scope_full=False)
-    else:
-        cfg = config.load()
-    return _emit(
-        {
-            "status": "ok",
-            "scope": {
-                "folder": cfg.get("drive_scope_folder"),
-                "full": cfg.get("drive_scope_full"),
-            },
+
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "scope": {
+            "oauth": cfg.get("oauth_scope", "file"),
+            "folder": cfg.get("drive_scope_folder"),
+            "full": cfg.get("drive_scope_full"),
         },
-        args.human,
-    )
+    }
+    if note:
+        payload["note"] = note
+    return _emit(payload, args.human)
 
 
 def cmd_selftest(args: argparse.Namespace) -> int:
@@ -276,8 +288,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_output)
 
     sp = sub.add_parser("scope", parents=[shared])
-    sp.add_argument("--folder")
-    sp.add_argument("--full", action="store_true")
+    sp.add_argument("--folder", help="restrict listing to a Drive folder name")
+    sp.add_argument("--full", action="store_true", help="lift folder restriction")
+    sp.add_argument(
+        "--oauth",
+        choices=["file", "full"],
+        help="OAuth scope: 'file' (only files we created) or 'full' (read+write all)",
+    )
     sp.set_defaults(func=cmd_scope)
 
     sp = sub.add_parser("selftest", parents=[shared])
