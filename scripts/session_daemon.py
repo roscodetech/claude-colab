@@ -129,6 +129,40 @@ class Daemon:
             if cmd == "run_all":
                 results = self.session.run_all()
                 return {"status": "ok", "results": [r.to_dict() for r in results]}
+            if cmd == "run_all_native":
+                # Trigger Colab's own "Run all" via keyboard shortcut (Ctrl+F9).
+                # Colab then handles cell ordering, kernel-restart prompts, and
+                # cached-output invalidation natively. Poll for completion by
+                # watching the count of running/queued cells.
+                page = self.session.page
+                self._dismiss_blocking_dialogs()
+                # Focus the notebook so the shortcut hits Colab's own listener
+                # rather than the OS / browser.
+                page.click("body")
+                page.keyboard.press("Control+F9")
+                deadline = time.time() + int(payload.get("timeout_sec", 3600))
+                last_state = None
+                first_seen_running = False
+                while time.time() < deadline:
+                    time.sleep(2.0)
+                    self._dismiss_blocking_dialogs()
+                    state = page.evaluate(
+                        "() => ({"
+                        "  running: document.querySelectorAll('.cell.code.running').length,"
+                        "  queued: document.querySelectorAll('.cell.code.pending,.cell.code.queued').length,"
+                        "  total: document.querySelectorAll('.cell.code').length,"
+                        "})"
+                    )
+                    if state != last_state:
+                        _log(f"run_all_native: {state}")
+                        last_state = state
+                    if state["running"] > 0:
+                        first_seen_running = True
+                    elif first_seen_running and state["queued"] == 0:
+                        break
+                else:
+                    return {"status": "error", "error": "run_all_native timed out"}
+                return {"status": "ok", "final_state": state}
             if cmd == "quit":
                 self._stop.set()
                 return {"status": "ok", "shutting_down": True}

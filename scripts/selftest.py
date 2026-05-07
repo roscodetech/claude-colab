@@ -22,6 +22,12 @@ CANARY_CELLS = [
         "code",
         ("import matplotlib.pyplot as plt\nplt.plot([1, 2, 3], [1, 4, 9])\nplt.show()\n"),
     ),
+    # DataFrame display — exercises rich-text capture from the iframe (HTML
+    # table). If our selectors miss this, rich_text_capture check fails.
+    (
+        "code",
+        ("import pandas as pd\ndf = pd.DataFrame({'a': [1, 2, 3], 'b': ['x', 'y', 'z']})\ndf\n"),
+    ),
     ("code", "raise ValueError('intentional canary error')"),
 ]
 
@@ -70,13 +76,25 @@ def run() -> dict[str, Any]:
             }
         )
 
-        # Cell 2: should be marked status=error and error_text non-empty
+        # Cell 2: DataFrame display — rich text from iframe should contain 'a'
+        # and 'b' (column headers) and the row values.
         c2 = results[2] if len(results) > 2 else {}
+        c2_text = (c2.get("stdout") or "").lower()
+        report["checks"].append(
+            {
+                "name": "rich_text_capture",
+                "ok": "a" in c2_text and "b" in c2_text and "x" in c2_text,
+                "got": (c2.get("stdout") or "")[:120],
+            }
+        )
+
+        # Cell 3: should be marked status=error and error_text non-empty
+        c3 = results[3] if len(results) > 3 else {}
         report["checks"].append(
             {
                 "name": "error_detection",
-                "ok": c2.get("status") == "error" and bool(c2.get("error_text")),
-                "got_status": c2.get("status"),
+                "ok": c3.get("status") == "error" and bool(c3.get("error_text")),
+                "got_status": c3.get("status"),
             }
         )
     except Exception as e:
