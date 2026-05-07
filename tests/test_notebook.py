@@ -120,3 +120,90 @@ def test_round_trip_via_nbformat_serialization():
     assert len(nb2.cells) == 3
     assert nb2.cells[0]["cell_type"] == "code"
     assert nb2.cells[2]["cell_type"] == "markdown"
+
+
+# --- Cell-id normalization (PR #5: legacy nbformat compat)
+
+
+def test_normalize_promotes_metadata_id_to_top_level():
+    """Legacy Colab notebooks (nbformat_minor < 5) store id in metadata.id only."""
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {"id": "Wt5t0pqu-BQH"},
+            "outputs": [],
+            "source": [],
+            # Note: NO top-level 'id' field
+        }
+    ]
+    notebook._normalize_cell_ids(nb)
+    assert nb.cells[0]["id"] == "Wt5t0pqu-BQH"
+
+
+def test_normalize_generates_id_when_neither_field_present():
+    """Truly ancient or hand-edited notebooks may have no id at all."""
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [
+        {"cell_type": "code", "metadata": {}, "outputs": [], "source": []},
+    ]
+    notebook._normalize_cell_ids(nb)
+    cid = nb.cells[0]["id"]
+    assert cid and len(cid) == 8
+    assert all(c.isalnum() for c in cid)
+
+
+def test_normalize_preserves_existing_top_level_id():
+    """Modern (4.5) cells with both fields are unchanged — top-level wins."""
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [
+        {
+            "cell_type": "code",
+            "id": "modern42",
+            "metadata": {"id": "different"},
+            "outputs": [],
+            "source": [],
+        }
+    ]
+    notebook._normalize_cell_ids(nb)
+    assert nb.cells[0]["id"] == "modern42"  # untouched
+
+
+def test_normalize_handles_duplicate_metadata_ids():
+    """Two cells with the same metadata.id get unique top-level ids."""
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [
+        {"cell_type": "code", "metadata": {"id": "dup"}, "outputs": [], "source": []},
+        {"cell_type": "code", "metadata": {"id": "dup"}, "outputs": [], "source": []},
+    ]
+    notebook._normalize_cell_ids(nb)
+    ids = [c["id"] for c in nb.cells]
+    assert ids[0] == "dup"  # first wins
+    assert ids[1] != "dup"  # second got a fresh id
+    assert len(set(ids)) == 2
+
+
+def test_normalize_is_idempotent():
+    """Running normalize twice doesn't change ids the second time."""
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [
+        {"cell_type": "code", "metadata": {"id": "Wt5t0pqu-BQH"}, "outputs": [], "source": []},
+        {"cell_type": "code", "metadata": {}, "outputs": [], "source": []},
+    ]
+    notebook._normalize_cell_ids(nb)
+    first_pass = [c["id"] for c in nb.cells]
+
+    notebook._normalize_cell_ids(nb)
+    second_pass = [c["id"] for c in nb.cells]
+    assert first_pass == second_pass
+
+
+def test_normalize_handles_missing_metadata():
+    """Some malformed cells lack the metadata dict entirely."""
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [
+        {"cell_type": "code", "outputs": [], "source": []},  # no metadata
+    ]
+    notebook._normalize_cell_ids(nb)
+    assert nb.cells[0]["id"]  # got a fresh one
