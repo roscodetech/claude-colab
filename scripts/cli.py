@@ -408,7 +408,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     """Smoke-test: create canary, run print/plot/error cells, report broken selectors."""
     from . import selftest
 
-    return _emit(selftest.run(), args.human)
+    return _emit(selftest.run(runtime=args.runtime or "cpu"), args.human)
 
 
 # ---------- argparse ----------
@@ -506,6 +506,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_scope)
 
     sp = sub.add_parser("selftest", parents=[shared])
+    sp.add_argument(
+        "--runtime",
+        choices=["cpu", "gpu", "tpu"],
+        help="when set to gpu/tpu, append a torch.cuda check (consumes Colab "
+        "quota; currently broken — runtime-change dialog selectors are stale, "
+        "see selectors.py)",
+    )
     sp.set_defaults(func=cmd_selftest)
 
     return p
