@@ -74,6 +74,9 @@ def _kill_orphan_chromiums(profile_dir: str) -> None:
         pass
 
 
+HEARTBEAT_INTERVAL_SEC = 15.0
+
+
 class Daemon:
     def __init__(self, file_id: str, runtime: str, port: int):
         self.file_id = file_id
@@ -82,6 +85,15 @@ class Daemon:
         self.started_at = time.time()
         self.session: browser.ColabSession | None = None
         self._stop = threading.Event()
+        # Mutex around session access. Multiple connections can hit run_cell
+        # concurrently; the underlying Playwright page is single-threaded use.
+        self._session_lock = threading.Lock()
+        # Progress state — read by ping, written by run handlers. Plain attrs
+        # are atomic enough for these reads/writes (no torn-read risk for
+        # immutable types, and we accept a stale read in exchange for not
+        # serializing ping behind run_cell).
+        self._running_cell: str | None = None
+        self._running_started_at: float | None = None
 
     # ---------- Command dispatch ----------
 
@@ -104,15 +116,26 @@ class Daemon:
             _log(f"dismiss_dialogs failed: {e}")
             return 0
 
+    def _running_state(self) -> dict | None:
+        """Snapshot of the in-progress cell, if any. Used by ping responses."""
+        cid = self._running_cell
+        started = self._running_started_at
+        if cid is None or started is None:
+            return None
+        return {"cell_id": cid, "elapsed_sec": int(time.time() - started)}
+
     def handle(self, payload: dict) -> dict:
         cmd = payload.get("cmd")
         try:
             if cmd == "ping":
+                # Lock-free path — readers tolerate a stale snapshot in exchange
+                # for not blocking behind a 5-minute run_cell.
                 return {
                     "status": "ok",
                     "uptime_sec": int(time.time() - self.started_at),
                     "file_id": self.file_id,
                     "runtime": self.runtime,
+                    "running": self._running_state(),
                 }
             if cmd == "dismiss_dialogs":
                 return {"status": "ok", "dismissed": self._dismiss_blocking_dialogs()}
@@ -121,13 +144,25 @@ class Daemon:
                 if not cell_id:
                     return {"status": "error", "error": "cell_id required"}
                 timeout = int(payload.get("timeout_sec", browser.DEFAULT_RUN_TIMEOUT))
-                # Auto-dismiss any blocking dialog before each run so a stale
-                # "notebook modified" modal doesn't break the whole queue.
-                self._dismiss_blocking_dialogs()
-                result = self.session.run_cell(cell_id, timeout_sec=timeout)
+                with self._session_lock:
+                    self._dismiss_blocking_dialogs()
+                    self._running_cell = cell_id
+                    self._running_started_at = time.time()
+                    try:
+                        result = self.session.run_cell(cell_id, timeout_sec=timeout)
+                    finally:
+                        self._running_cell = None
+                        self._running_started_at = None
                 return {"status": "ok", "result": result.to_dict()}
             if cmd == "run_all":
-                results = self.session.run_all()
+                with self._session_lock:
+                    self._running_cell = "<all>"
+                    self._running_started_at = time.time()
+                    try:
+                        results = self.session.run_all()
+                    finally:
+                        self._running_cell = None
+                        self._running_started_at = None
                 return {"status": "ok", "results": [r.to_dict() for r in results]}
             if cmd == "run_all_native":
                 # Trigger Colab's own "Run all" via keyboard shortcut (Ctrl+F9).
@@ -186,6 +221,13 @@ class Daemon:
         return srv
 
     def serve_loop(self, srv: socket.socket) -> None:
+        """Accept connections and dispatch each on its own daemon thread.
+
+        Multi-threaded so `ping` can answer while a long `run_cell` is in
+        flight — without it, /colab-status would hang for the full duration.
+        Session access is serialized via self._session_lock; ping is
+        lock-free and reads the running-state snapshot directly.
+        """
         while not self._stop.is_set():
             try:
                 conn, _ = srv.accept()
@@ -194,30 +236,52 @@ class Daemon:
             except OSError as e:
                 _log(f"accept error: {e}")
                 break
-            with conn:
-                try:
-                    conn.settimeout(60)
-                    data = bytearray()
-                    while not data.endswith(b"\n"):
-                        chunk = conn.recv(65536)
-                        if not chunk:
-                            break
-                        data.extend(chunk)
-                    if not data:
-                        continue
-                    payload = json.loads(data.decode("utf-8").rstrip("\n"))
-                    response = self.handle(payload)
-                    conn.sendall((json.dumps(response, default=str) + "\n").encode("utf-8"))
-                except Exception as e:
-                    _log(f"connection error: {e}\n{traceback.format_exc()}")
-                    with contextlib.suppress(OSError):
-                        conn.sendall(
-                            (json.dumps({"status": "error", "error": str(e)}) + "\n").encode(
-                                "utf-8"
-                            )
-                        )
+            t = threading.Thread(target=self._serve_one, args=(conn,), daemon=True)
+            t.start()
         srv.close()
         _log("daemon stopped serving")
+
+    def _serve_one(self, conn) -> None:
+        with conn:
+            try:
+                conn.settimeout(60)
+                data = bytearray()
+                while not data.endswith(b"\n"):
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                if not data:
+                    return
+                payload = json.loads(data.decode("utf-8").rstrip("\n"))
+                response = self.handle(payload)
+                conn.sendall((json.dumps(response, default=str) + "\n").encode("utf-8"))
+            except Exception as e:
+                _log(f"connection error: {e}\n{traceback.format_exc()}")
+                with contextlib.suppress(OSError):
+                    conn.sendall(
+                        (json.dumps({"status": "error", "error": str(e)}) + "\n").encode("utf-8")
+                    )
+
+    def heartbeat_loop(self) -> None:
+        """Background thread: while a cell is running, write a progress line
+        to session.log every HEARTBEAT_INTERVAL_SEC. Lets users tailing the
+        log see that work is happening without polling /colab-status.
+        """
+        last_logged_for: tuple[str, int] | None = None
+        while not self._stop.is_set():
+            self._stop.wait(HEARTBEAT_INTERVAL_SEC)
+            state = self._running_state()
+            if state is None:
+                last_logged_for = None
+                continue
+            # Only log when the elapsed bucket has changed — avoids flooding
+            # the log with identical lines if a cell stalls before our poll.
+            bucket = (state["cell_id"], state["elapsed_sec"] // 5)
+            if bucket == last_logged_for:
+                continue
+            last_logged_for = bucket
+            _log(f"[heartbeat] cell {state['cell_id']} running for {state['elapsed_sec']}s")
 
     # ---------- Lifecycle ----------
 
@@ -256,6 +320,10 @@ class Daemon:
                 runtime=self.runtime,
                 started_at=self.started_at,
             ).write()
+
+            # Heartbeat thread — daemon=True so it dies with the process.
+            hb = threading.Thread(target=self.heartbeat_loop, daemon=True)
+            hb.start()
 
             self.serve_loop(srv)
             return 0

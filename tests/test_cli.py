@@ -282,12 +282,46 @@ def test_status_when_no_session(monkeypatch):
 
 def test_status_with_active_session(monkeypatch):
     _stub_session(monkeypatch, file_id="abc")
-    monkeypatch.setattr("scripts.cli.session_client.ping", lambda info=None: True)
+    monkeypatch.setattr(
+        "scripts.cli.session_client.send",
+        lambda cmd, info=None, **kw: {"status": "ok", "running": None},
+    )
     rc, data = _run("status")
     assert rc == 0
     assert data["active"] is True
     assert data["responsive"] is True
     assert data["session"]["file_id"] == "abc"
+
+
+def test_status_surfaces_running_cell(monkeypatch):
+    """When a cell is in flight, /colab-status reports cell_id + elapsed."""
+    _stub_session(monkeypatch, file_id="abc")
+    monkeypatch.setattr(
+        "scripts.cli.session_client.send",
+        lambda cmd, info=None, **kw: {
+            "status": "ok",
+            "running": {"cell_id": "abc123", "elapsed_sec": 42},
+        },
+    )
+    rc, data = _run("status")
+    assert rc == 0
+    assert data["running"] == {"cell_id": "abc123", "elapsed_sec": 42}
+
+
+def test_status_unresponsive_when_send_fails(monkeypatch):
+    """Daemon process alive but socket dead → responsive=False."""
+    from scripts import session_client
+
+    _stub_session(monkeypatch, file_id="abc")
+
+    def _boom(*_a, **_kw):
+        raise session_client.SessionUnavailable("connection refused")
+
+    monkeypatch.setattr("scripts.cli.session_client.send", _boom)
+    rc, data = _run("status")
+    assert rc == 0
+    assert data["responsive"] is False
+    assert "running" not in data
 
 
 def test_close_when_no_session(monkeypatch):
