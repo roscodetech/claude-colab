@@ -20,6 +20,10 @@ BROWSER_PROFILE_DIR = HOME / "chrome-profile"
 RUNS_DIR = HOME / "runs"
 LOCK_PATH = HOME / "colab.lock"
 LOG_PATH = HOME / "claude-colab.log"
+# Persistent-session metadata. Daemon writes on startup, deletes on clean
+# shutdown. Stale presence (daemon crashed) is detected via PID liveness.
+SESSION_PATH = HOME / "session.json"
+SESSION_LOG_PATH = HOME / "session.log"
 
 # Plugin root is two levels up from this file (scripts/paths.py → claude-colab/)
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent

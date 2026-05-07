@@ -18,13 +18,25 @@ When **not** to invoke: local Jupyter (no Drive component), pure scripting tasks
 | Make a new one | `/colab-new <name>` |
 | Look inside one (cell list) | `/colab-show <id>` |
 | Add / edit / delete a cell | `/colab-edit <id> <action>` |
+| **Open a persistent session** (warm runtime) | `/colab-open <id>` |
 | Run a cell or all cells | `/colab-run <id> --cell <cid>` or `--all` |
 | Get last output text | `/colab-output <id> <cell>` |
-| Open in browser to inspect manually | `/colab-open <id>` |
+| Check / close session | `/colab-status`, `/colab-close` |
 | Trash / permanently delete | `/colab-delete <id>` |
-| Change Drive scope | `/colab-scope` |
+| Change Drive scope (OAuth + folder) | `/colab-scope` |
 | Diagnose UI breakage | `/colab-selftest` |
-| **"Build me a notebook that does X"** | spawn `colab-planner` → review with user → spawn `colab-executor` |
+| **"Build me a notebook that does X"** | spawn `colab-planner` → review with user → spawn `colab-executor` (which opens its own session) |
+
+## Sessions vs ephemeral runs (important)
+
+`/colab-run` operates in two modes:
+
+- **Session mode** (preferred): If `/colab-open` was called for the notebook, the run reuses the warm browser + runtime. Kernel state (imports, loaded data) persists across runs. ~3s per cell after warmup.
+- **Ephemeral mode** (fallback): No session active. Each `/colab-run` spins up a new browser + new runtime (~30-60s overhead) and tears down at end. Kernel state lost between runs.
+
+**Rule of thumb**: any time the user is going to run more than one cell, or iterate on a single cell with edits, suggest `/colab-open` first. The response includes a `via: "session" | "ephemeral"` field so you always know which path was taken.
+
+The lock is shared: only one notebook can have an active session at a time. Trying to `/colab-run` against notebook B while a session is open for notebook A fails loud.
 
 ## The notebook-from-a-goal flow (most common)
 

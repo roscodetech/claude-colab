@@ -30,6 +30,8 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "RUNS_DIR", fake_home / "runs")
     monkeypatch.setattr(paths, "LOCK_PATH", fake_home / "colab.lock")
     monkeypatch.setattr(paths, "LOG_PATH", fake_home / "claude-colab.log")
+    monkeypatch.setattr(paths, "SESSION_PATH", fake_home / "session.json")
+    monkeypatch.setattr(paths, "SESSION_LOG_PATH", fake_home / "session.log")
 
     # config caches nothing on import, so no reload needed there.
     yield fake_home
