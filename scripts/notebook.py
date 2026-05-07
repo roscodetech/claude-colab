@@ -9,6 +9,8 @@ write back to Drive is the caller's call (we don't want hidden network I/O).
 
 from __future__ import annotations
 
+import secrets
+import string
 from typing import Any
 
 import nbformat
@@ -18,6 +20,14 @@ from . import drive
 
 NBFORMAT_VERSION = 4
 NBFORMAT_MINOR = 5  # required for stable cell ids
+
+# Charset used by nbformat for stable cell ids (matches nbformat.v4.random_cell_id).
+_CELL_ID_ALPHABET = string.ascii_letters + string.digits
+
+
+def _new_cell_id() -> str:
+    """Generate a fresh nbformat 4.5-compatible cell id (8 alphanumeric chars)."""
+    return "".join(secrets.choice(_CELL_ID_ALPHABET) for _ in range(8))
 
 
 # ---------- Construction ----------
@@ -45,13 +55,42 @@ def empty_notebook_bytes() -> bytes:
 
 
 def read(file_id: str) -> tuple[nbformat.NotebookNode, str | None]:
-    """Fetch from Drive and parse. Returns (notebook, head_revision_id)."""
+    """Fetch from Drive and parse. Returns (notebook, head_revision_id).
+
+    Normalizes cell ids on read so downstream cell ops have something to
+    address by. See _normalize_cell_ids for the legacy-Colab compat story.
+    """
     raw = drive.get_notebook_bytes(file_id)
     nb = nbformat.reads(raw.decode("utf-8"), as_version=NBFORMAT_VERSION)
-    # Force minor version 5 so we always have stable ids.
+    _normalize_cell_ids(nb)
     nb.nbformat_minor = NBFORMAT_MINOR
     meta = drive.get_metadata(file_id)
     return nb, meta.get("headRevisionId")
+
+
+def _normalize_cell_ids(nb: nbformat.NotebookNode) -> None:
+    """Ensure every cell has a top-level `id` field (nbformat 4.5 spec).
+
+    Two legacy shapes exist in the wild:
+    - Older Colab notebooks (nbformat_minor < 5) store the id in `metadata.id`
+      with no top-level field. We promote `metadata.id` → `id`.
+    - Truly ancient notebooks (or hand-edited ones) have neither. We mint a
+      fresh id so cell ops have something stable to address by.
+
+    Mutates in place. Idempotent — cells that already have a top-level id are
+    untouched. Bumping nbformat_minor to 5 happens at the call site.
+    """
+    seen_ids: set[str] = set()
+    for cell in nb.cells:
+        cid = cell.get("id")
+        if not cid:
+            cid = (cell.get("metadata") or {}).get("id") or _new_cell_id()
+        # Avoid the rare case of duplicate ids (some legacy notebooks have
+        # collisions across cells). Generate a fresh one for the duplicate.
+        while cid in seen_ids:
+            cid = _new_cell_id()
+        cell["id"] = cid
+        seen_ids.add(cid)
 
 
 def write(

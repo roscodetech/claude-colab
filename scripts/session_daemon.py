@@ -85,6 +85,25 @@ class Daemon:
 
     # ---------- Command dispatch ----------
 
+    def _dismiss_blocking_dialogs(self) -> int:
+        """Force-close any open mwc-dialog. Colab pops these for runtime errors
+        and for "notebook modified externally" warnings, and they intercept
+        pointer events on every cell. Returns the count dismissed."""
+        if self.session is None or self.session.page is None:
+            return 0
+        try:
+            n = self.session.page.evaluate(
+                "() => { const ds = document.querySelectorAll('mwc-dialog[open]');"
+                " for (const d of ds) { d.removeAttribute('open'); d.style.display='none'; }"
+                " return ds.length; }"
+            )
+            if n:
+                _log(f"dismissed {n} mwc-dialog(s)")
+            return int(n)
+        except Exception as e:
+            _log(f"dismiss_dialogs failed: {e}")
+            return 0
+
     def handle(self, payload: dict) -> dict:
         cmd = payload.get("cmd")
         try:
@@ -95,11 +114,16 @@ class Daemon:
                     "file_id": self.file_id,
                     "runtime": self.runtime,
                 }
+            if cmd == "dismiss_dialogs":
+                return {"status": "ok", "dismissed": self._dismiss_blocking_dialogs()}
             if cmd == "run_cell":
                 cell_id = payload.get("cell_id")
                 if not cell_id:
                     return {"status": "error", "error": "cell_id required"}
                 timeout = int(payload.get("timeout_sec", browser.DEFAULT_RUN_TIMEOUT))
+                # Auto-dismiss any blocking dialog before each run so a stale
+                # "notebook modified" modal doesn't break the whole queue.
+                self._dismiss_blocking_dialogs()
                 result = self.session.run_cell(cell_id, timeout_sec=timeout)
                 return {"status": "ok", "result": result.to_dict()}
             if cmd == "run_all":
