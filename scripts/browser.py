@@ -130,14 +130,31 @@ class ColabSession:
 
         if kind != "cpu":
             # Change accelerator before connecting — switching after forces restart.
-            self.page.click(selectors.RUNTIME_MENU)
+            # Runtime menu uses goog-menu-button with whitespace-padded labels;
+            # locator+filter handles that better than CSS :text-is.
+            self.page.locator(selectors.RUNTIME_MENU_CLASS).filter(has_text="Runtime").first.click()
             self.page.click(selectors.RUNTIME_CHANGE)
-            sel = self.page.locator(selectors.RUNTIME_HARDWARE_SELECT)
-            sel.click()
-            label = {"gpu": "GPU", "tpu": "TPU"}.get(kind, "GPU")
-            self.page.click(f'mwc-list-item:has-text("{label}")')
-            self.page.click(selectors.RUNTIME_SAVE)
-            self.page.wait_for_timeout(500)
+            # KNOWN GAP: dialog hardware-picker selectors are stale. Modern
+            # Colab uses Material 3 components; we haven't pinned the exact
+            # selector yet. See selectors.py + scripts/probe_runtime_dialog.py
+            # for the contributor handoff. For now, attempt the legacy
+            # selector — if it times out, we surface a clean error and Colab
+            # picks its default (usually CPU).
+            try:
+                sel = self.page.locator(selectors.RUNTIME_HARDWARE_SELECT)
+                sel.click(timeout=10_000)
+                label = {"gpu": "GPU", "tpu": "TPU"}.get(kind, "GPU")
+                self.page.click(f'mwc-list-item:has-text("{label}")')
+                self.page.click(selectors.RUNTIME_SAVE)
+                self.page.wait_for_timeout(500)
+            except Exception as e:
+                # Cancel the dialog so it doesn't sit blocking pointer events.
+                with contextlib.suppress(Exception):
+                    self.page.click('text="Cancel"', timeout=2_000)
+                raise RuntimeError(
+                    f"Runtime-type dialog selectors are stale ({e}). "
+                    "GPU/TPU runtime change is currently broken; see selectors.py."
+                ) from e
 
         # Click Connect; suppress if already connected (button gone).
         with contextlib.suppress(Exception):

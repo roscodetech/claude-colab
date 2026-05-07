@@ -7,12 +7,24 @@ Versioning: bump SCHEMA_VERSION when selectors meaningfully change so users
 running stale plugins get a clear hint.
 """
 
-SCHEMA_VERSION = "2026-05-07b"
+SCHEMA_VERSION = "2026-05-07c"
 
 # Top-level chrome
 CONNECT_BUTTON = 'colab-connect-button, [aria-label*="Connect"]'
-RUNTIME_MENU = '[aria-label="Runtime"]'
+# Runtime menu is a Closure goog-menu-button. The label is wrapped in
+# whitespace/nested spans, so :text-is misses; browser.connect_runtime uses
+# locator(".goog-menu-button").filter(has_text="Runtime") instead. Kept here
+# as documentation of the parent class.
+RUNTIME_MENU_CLASS = ".goog-menu-button"
 RUNTIME_CHANGE = 'text="Change runtime type"'
+# WARNING — runtime-type dialog selectors have shifted to Material 3
+# (md-* components) and we haven't pinned the exact hardware-picker selector
+# yet. Probed empirically 2026-05-07: dialog contains md-text-button (Save,
+# Cancel) but the hardware accelerator chooser uses a different element type
+# we haven't isolated. Run scripts/probe_runtime_dialog.py to enumerate
+# candidates if you're fixing this. Until then, --runtime gpu/tpu open paths
+# fail at this dialog and fall back to whatever runtime Colab assigns by
+# default (usually CPU).
 RUNTIME_HARDWARE_SELECT = 'mwc-select[aria-label*="Hardware accelerator"]'
 RUNTIME_SAVE = 'paper-button[dialog-confirm], button:has-text("Save")'
 
