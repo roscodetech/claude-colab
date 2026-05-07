@@ -1,10 +1,23 @@
 ---
-description: Execute one cell or all cells in a notebook via headed Chromium. Captures stdout, errors, and plot images.
+description: Execute one cell or all cells. Uses the active session if /colab-open was called for this notebook (fast, kernel state preserved); otherwise runs ephemerally (slow, kernel state lost between runs).
 ---
 
 # /colab-run
 
-Drives the notebook in Chromium, clicks Run, captures output. **Locks** — only one notebook can be running at a time.
+## Two modes
+
+**Session mode** (preferred for iterative work):
+- Requires `/colab-open <FILE_ID>` first
+- Subsequent runs reuse the same browser + Colab runtime
+- Kernel state preserved (imports, loaded models, mounted Drive)
+- ~3s round-trip per cell after warmup
+
+**Ephemeral mode** (auto-fallback when no session is active):
+- New browser + new runtime per call (~30-60s overhead)
+- Kernel state lost between calls
+- Fine for one-shot runs
+
+The CLI picks automatically based on the active session. The response includes a `via` field (`"session"` or `"ephemeral"`) so the agent can see which path was taken.
 
 ## Action
 
@@ -18,23 +31,31 @@ All cells:
 python "${CLAUDE_PLUGIN_ROOT}/bin/colab.py" run "$FILE_ID" --all
 ```
 
-Optional flags:
-- `--runtime cpu|gpu|tpu` — overrides default
+Optional:
+- `--runtime cpu|gpu|tpu` — only honored in ephemeral mode (session locks runtime at /colab-open time)
 - `--timeout N` — per-cell timeout in seconds (default 600)
 
 ## Result format
 
-Per-cell:
 ```json
-{"cell_id": "...", "status": "ok|error|timeout", "stdout": "...", "error_text": "...", "images": ["/path/to/img.png"], "duration_ms": 1234}
+{
+  "status": "ok",
+  "via": "session" | "ephemeral",
+  "result": {
+    "cell_id": "...",
+    "status": "ok | error | timeout",
+    "stdout": "...",
+    "error_text": "...",
+    "images": ["/path/to/img.png"],
+    "duration_ms": 1234
+  }
+}
 ```
 
-## After running
+## Cross-notebook safety
 
-- All `ok`: summarize stdout briefly.
-- Any `error`: read `error_text`. If user asked for autonomous fixing, spawn the **colab-debugger** subagent with the failing cell + error + last N cell stdouts. After debugger returns a proposed fix, apply via `/colab-edit` and re-run that cell. Cap retries at the user's `debugger_max_retries` config (default 2).
-- `timeout`: warn the user; do not auto-retry (likely an infinite loop or stuck runtime).
+If a session is active for a DIFFERENT notebook than the one you're running against, the call fails loud — running ephemerally would block on the lock anyway. `/colab-close` first or use the active notebook.
 
-## Lock behavior
+## When to suggest /colab-open
 
-If output shows `ColabBusyError`, another session has the lock. Tell user to wait or check `~/.claude-colab/colab.lock` if they're sure nothing's running.
+If the user is going to run more than one cell, or wants to iterate on a single cell with edits, recommend `/colab-open` *before* the first run. Otherwise each ephemeral run loses the runtime.

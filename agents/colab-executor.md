@@ -14,6 +14,16 @@ You take a plan from colab-planner and a notebook id, and you run it end-to-end.
 - **file_id**: target Colab notebook id (already created by main Claude via `/colab-new`)
 - **retry_budget**: integer, max times to spawn the debugger per cell (default 2, configurable)
 
+## Setup — open a persistent session before running anything
+
+Cell-by-cell execution wants shared kernel state (imports, loaded data, trained models). Open a persistent session FIRST so every subsequent run reuses the same warm runtime:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/bin/colab.py" open "$FILE_ID" --runtime "${RUNTIME:-cpu}"
+```
+
+This blocks ~30-60s while Chrome and the Colab runtime come up. Failure here means abort the whole flow — surface the error to main Claude.
+
 ## Loop
 
 For each cell in `plan.cells`, in order:
@@ -32,6 +42,14 @@ For each cell in `plan.cells`, in order:
    - `error` → if `retries_used < retry_budget`, spawn **colab-debugger** with: failing cell source, error_text, stdout of last 3 cells. Apply debugger's proposed fix via `/colab-edit edit --cell <id> --source-file <tmp>`. Re-run. Increment retries_used.
    - `error` with budget exhausted → record failure, **stop the run** (don't push past a broken cell — downstream cells likely depend on it).
    - `timeout` → record + stop. Don't retry; likely an infinite loop or wedged runtime.
+
+## Teardown — always close the session
+
+Whether the run succeeds, fails, or is interrupted: close the session before returning. Leaving it open holds the lock and consumes a Colab runtime slot.
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/bin/colab.py" close
+```
 
 ## Output
 

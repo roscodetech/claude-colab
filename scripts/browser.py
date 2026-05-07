@@ -196,9 +196,16 @@ class ColabSession:
     def run_all(self, timeout_sec: int = DEFAULT_RUN_TIMEOUT * 4) -> list[RunResult]:
         # Iterate cells in DOM order — that's the executable order in Colab.
         # The DOM id is `cell-<nbformat-id>`; strip the prefix.
+        # Skip markdown cells: they have no run button, so clicking would hang
+        # for the locator timeout. Colab tags them via a child `marked-element`
+        # /`paper-icon-button[aria-label*="Run"]` absence; simplest reliable
+        # filter is the presence of a run button on the cell.
         ids = self.page.eval_on_selector_all(
             selectors.CELL_LIST,
-            "els => els.map(e => (e.getAttribute('id') || '').replace(/^cell-/, '')).filter(Boolean)",
+            # Colab tags code cells with class `code` and markdown cells with `text`.
+            # Run button is sometimes shadow-DOM / lazy-rendered, so don't gate on it.
+            "els => els.filter(e => e.classList.contains('code'))"
+            ".map(e => (e.getAttribute('id') || '').replace(/^cell-/, '')).filter(Boolean)",
         )
         out: list[RunResult] = []
         for cid in ids:

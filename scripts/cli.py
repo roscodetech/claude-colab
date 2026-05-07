@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -19,9 +21,9 @@ from typing import Any
 # Allow direct invocation (`python scripts/cli.py`) and module invocation.
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from scripts import auth, browser, config, drive, notebook, paths
+    from scripts import auth, browser, config, drive, notebook, paths, session_client
 else:
-    from . import auth, browser, config, drive, notebook, paths
+    from . import auth, browser, config, drive, notebook, paths, session_client
 
 
 # ---------- helpers ----------
@@ -152,19 +154,209 @@ def cmd_edit(args: argparse.Namespace) -> int:
 
 
 def cmd_open(args: argparse.Namespace) -> int:
-    return _emit(browser.open_only(args.file_id), args.human)
+    """Spawn the persistent session daemon for a notebook.
+
+    Holds a long-lived browser + warm runtime so successive /colab-run calls
+    share kernel state. Only one session at a time (lock-enforced).
+    """
+    existing = session_client.get_active_session()
+    if existing is not None:
+        if existing.file_id == args.file_id:
+            return _emit(
+                {
+                    "status": "ok",
+                    "session": {
+                        "pid": existing.pid,
+                        "port": existing.port,
+                        "file_id": existing.file_id,
+                        "runtime": existing.runtime,
+                        "uptime_sec": int(time.time() - existing.started_at),
+                    },
+                    "note": "session already active for this notebook",
+                },
+                args.human,
+            )
+        return _fail(
+            f"another session is already active for {existing.file_id!r} "
+            "(/colab-close first, or use /colab-status to inspect)",
+            human=args.human,
+        )
+
+    runtime = args.runtime or config.load().get("default_runtime", "cpu")
+    pid = _spawn_session_daemon(args.file_id, runtime)
+    info = session_client.wait_until_ready(timeout_sec=args.timeout)
+    if info is None:
+        # Daemon never came up. Try to kill it so we don't leak a zombie.
+        _kill_pid(pid)
+        return _fail(
+            "session daemon failed to start within timeout; "
+            f"see {paths.SESSION_LOG_PATH} for details",
+            human=args.human,
+        )
+
+    return _emit(
+        {
+            "status": "ok",
+            "session": {
+                "pid": info.pid,
+                "port": info.port,
+                "file_id": info.file_id,
+                "runtime": info.runtime,
+            },
+        },
+        args.human,
+    )
+
+
+def cmd_close(args: argparse.Namespace) -> int:
+    """Tell the active session daemon to exit cleanly."""
+    info = session_client.get_active_session()
+    if info is None:
+        return _emit({"status": "ok", "note": "no active session"}, args.human)
+
+    try:
+        res = session_client.send("quit", info=info)
+    except (session_client.SessionUnavailable, OSError) as e:
+        # Daemon is unreachable but session.json says alive — force-kill PID.
+        _kill_pid(info.pid)
+        with __import__("contextlib").suppress(OSError):
+            paths.SESSION_PATH.unlink()
+        return _emit(
+            {"status": "ok", "note": f"daemon unreachable, force-killed pid {info.pid}: {e}"},
+            args.human,
+        )
+    return _emit({"status": "ok", "response": res}, args.human)
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Report on the active session, if any."""
+    info = session_client.get_active_session()
+    if info is None:
+        return _emit({"status": "ok", "active": False}, args.human)
+
+    # Verify the daemon is responsive, not just alive.
+    responsive = session_client.ping(info)
+    return _emit(
+        {
+            "status": "ok",
+            "active": True,
+            "responsive": responsive,
+            "session": {
+                "pid": info.pid,
+                "port": info.port,
+                "file_id": info.file_id,
+                "runtime": info.runtime,
+                "uptime_sec": int(time.time() - info.started_at),
+            },
+        },
+        args.human,
+    )
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    if args.cell == "all" or args.cell is None and args.all:
-        results = browser.run_all_cells(args.file_id, runtime=args.runtime)
-        return _emit({"status": "ok", "results": results}, args.human)
-    if args.cell is None:
+    """Run a cell or all cells. Uses the active session if it matches the
+    requested file_id; otherwise falls back to ephemeral run (browser
+    spin-up + tear-down per call — no shared kernel state).
+    """
+    want_all = args.cell == "all" or (args.cell is None and args.all)
+    if not want_all and args.cell is None:
         return _fail("provide --cell <id> or --all", human=args.human)
+
+    sess = session_client.get_active_session()
+
+    # If a session is up for a DIFFERENT notebook, fail loud — running
+    # ephemerally would block on the lock anyway and produce a confusing error.
+    if sess is not None and sess.file_id != args.file_id:
+        return _fail(
+            f"another notebook ({sess.file_id!r}) has an active session; "
+            "/colab-close first or run against that notebook",
+            human=args.human,
+        )
+
+    if sess is not None:
+        # Use the persistent session — fast, kernel state preserved.
+        try:
+            if want_all:
+                res = session_client.send("run_all", info=sess)
+                return _emit(
+                    {"status": "ok", "via": "session", "results": res.get("results", [])},
+                    args.human,
+                )
+            res = session_client.send(
+                "run_cell", info=sess, cell_id=args.cell, timeout_sec=args.timeout
+            )
+            return _emit(
+                {"status": "ok", "via": "session", "result": res.get("result")}, args.human
+            )
+        except session_client.SessionUnavailable as e:
+            return _fail(f"session unreachable: {e}", human=args.human)
+
+    # Ephemeral fallback. Warn — for iterative work the user almost always
+    # wants /colab-open instead.
+    if want_all:
+        results = browser.run_all_cells(args.file_id, runtime=args.runtime)
+        return _emit({"status": "ok", "via": "ephemeral", "results": results}, args.human)
     res = browser.run_one_cell(
         args.file_id, args.cell, runtime=args.runtime, timeout_sec=args.timeout
     )
-    return _emit({"status": "ok", "result": res}, args.human)
+    return _emit({"status": "ok", "via": "ephemeral", "result": res}, args.human)
+
+
+def _spawn_session_daemon(file_id: str, runtime: str) -> int:
+    """Detached spawn of session_daemon. Returns the child PID.
+
+    On Windows uses DETACHED_PROCESS so the daemon outlives this CLI invocation.
+    On POSIX uses start_new_session=True (setsid).
+    """
+    import subprocess
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "scripts.session_daemon",
+        "--file-id",
+        file_id,
+        "--runtime",
+        runtime,
+        "--port",
+        "0",
+    ]
+    kwargs: dict[str, Any] = {
+        "cwd": str(paths.PLUGIN_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if sys.platform == "win32":
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    return proc.pid
+
+
+def _kill_pid(pid: int) -> None:
+    """Best-effort kill of a daemon PID. Used on startup-failure cleanup."""
+    if pid <= 0:
+        return
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+            if handle:
+                kernel32.TerminateProcess(handle, 1)
+                kernel32.CloseHandle(handle)
+        else:
+            import signal as _signal
+
+            os.kill(pid, _signal.SIGTERM)
+    except Exception:
+        pass
 
 
 def cmd_output(args: argparse.Namespace) -> int:
@@ -272,7 +464,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("open", parents=[shared])
     sp.add_argument("file_id")
+    sp.add_argument("--runtime", choices=["cpu", "gpu", "tpu"])
+    sp.add_argument("--timeout", type=int, default=120, help="seconds to wait for daemon ready")
     sp.set_defaults(func=cmd_open)
+
+    sp = sub.add_parser("close", parents=[shared])
+    sp.set_defaults(func=cmd_close)
+
+    sp = sub.add_parser("status", parents=[shared])
+    sp.set_defaults(func=cmd_status)
 
     sp = sub.add_parser("run", parents=[shared])
     sp.add_argument("file_id")

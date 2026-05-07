@@ -202,3 +202,111 @@ def test_scope_combines_oauth_and_folder(monkeypatch):
     assert data["scope"]["oauth"] == "full"
     assert data["scope"]["folder"] == "my-stuff"
     assert data["scope"]["full"] is False  # folder filter still narrow
+
+
+# --- session routing (PR #4)
+
+
+def _stub_session(monkeypatch, file_id: str = "abc"):
+    """Make session_client.get_active_session return a fake session info."""
+    from scripts import session_client
+
+    fake = session_client.SessionInfo(pid=1, port=1, file_id=file_id, runtime="cpu", started_at=0.0)
+    monkeypatch.setattr(session_client, "get_active_session", lambda: fake)
+    return fake
+
+
+def test_run_uses_session_when_active(monkeypatch):
+    _stub_session(monkeypatch, file_id="abc")
+    sent: dict = {}
+
+    def fake_send(cmd, info=None, **kwargs):
+        sent["cmd"] = cmd
+        sent["kwargs"] = kwargs
+        if cmd == "run_cell":
+            return {"status": "ok", "result": {"cell_id": kwargs["cell_id"], "status": "ok"}}
+        return {}
+
+    monkeypatch.setattr("scripts.cli.session_client.send", fake_send)
+
+    rc, data = _run("run", "abc", "--cell", "c1")
+    assert rc == 0
+    assert data["via"] == "session"
+    assert sent["cmd"] == "run_cell"
+    assert sent["kwargs"]["cell_id"] == "c1"
+
+
+def test_run_falls_back_to_ephemeral_when_no_session(monkeypatch):
+    from scripts import session_client
+
+    monkeypatch.setattr(session_client, "get_active_session", lambda: None)
+    monkeypatch.setattr(
+        "scripts.cli.browser.run_one_cell",
+        lambda fid, cid, runtime=None, timeout_sec=600: {"cell_id": cid, "status": "ok"},
+    )
+
+    rc, data = _run("run", "abc", "--cell", "c1")
+    assert rc == 0
+    assert data["via"] == "ephemeral"
+
+
+def test_run_refuses_when_session_for_different_notebook(monkeypatch):
+    _stub_session(monkeypatch, file_id="other-nb")
+    rc, _ = _run("run", "my-nb", "--cell", "c1")
+    assert rc != 0  # cross-notebook attempt fails
+
+
+def test_run_all_via_session(monkeypatch):
+    _stub_session(monkeypatch, file_id="abc")
+    monkeypatch.setattr(
+        "scripts.cli.session_client.send",
+        lambda cmd, info=None, **kw: {
+            "status": "ok",
+            "results": [{"cell_id": "c1", "status": "ok"}],
+        },
+    )
+    rc, data = _run("run", "abc", "--all")
+    assert rc == 0
+    assert data["via"] == "session"
+    assert len(data["results"]) == 1
+
+
+def test_status_when_no_session(monkeypatch):
+    from scripts import session_client
+
+    monkeypatch.setattr(session_client, "get_active_session", lambda: None)
+    rc, data = _run("status")
+    assert rc == 0
+    assert data["active"] is False
+
+
+def test_status_with_active_session(monkeypatch):
+    _stub_session(monkeypatch, file_id="abc")
+    monkeypatch.setattr("scripts.cli.session_client.ping", lambda info=None: True)
+    rc, data = _run("status")
+    assert rc == 0
+    assert data["active"] is True
+    assert data["responsive"] is True
+    assert data["session"]["file_id"] == "abc"
+
+
+def test_close_when_no_session(monkeypatch):
+    from scripts import session_client
+
+    monkeypatch.setattr(session_client, "get_active_session", lambda: None)
+    rc, data = _run("close")
+    assert rc == 0
+    assert "no active session" in data.get("note", "")
+
+
+def test_open_refuses_when_session_already_active(monkeypatch):
+    _stub_session(monkeypatch, file_id="other")
+    rc, _ = _run("open", "my-nb")
+    assert rc != 0  # different notebook → refuse
+
+
+def test_open_idempotent_when_same_notebook_already_open(monkeypatch):
+    _stub_session(monkeypatch, file_id="abc")
+    rc, data = _run("open", "abc")
+    assert rc == 0
+    assert "already active" in data.get("note", "")
