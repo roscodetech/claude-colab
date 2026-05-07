@@ -103,7 +103,7 @@ class ColabSession:
         url = f"https://colab.research.google.com/drive/{self.file_id}"
         self.page.goto(url, wait_until="domcontentloaded")
         # Wait for the cell layout to render before doing anything else.
-        self.page.wait_for_selector("div.cell", timeout=30_000)
+        self.page.wait_for_selector(selectors.CELL_LIST, timeout=30_000)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -117,11 +117,19 @@ class ColabSession:
     # ---------- Runtime ----------
 
     def connect_runtime(self, kind: str | None = None) -> None:
-        """Click Connect; if `kind` is gpu/tpu, change runtime first."""
+        """Best-effort: click Connect, optionally change runtime type.
+
+        Does NOT wait for a confirmed "connected" state. Past attempts at that
+        relied on shadow-DOM probes that break every time Colab ships UI
+        changes (caught by /colab-selftest 2026-05-07). Colab auto-connects
+        when you click Run on a cell anyway, so we let run_cell absorb any
+        remaining connection time via its own per-cell timeout. Trade-off:
+        first cell of a fresh notebook can take ~30s longer than steady-state.
+        """
         kind = (kind or self.runtime or self.cfg.get("default_runtime") or "cpu").lower()
 
         if kind != "cpu":
-            # Open Runtime menu → Change runtime type → pick accelerator → Save
+            # Change accelerator before connecting — switching after forces restart.
             self.page.click(selectors.RUNTIME_MENU)
             self.page.click(selectors.RUNTIME_CHANGE)
             sel = self.page.locator(selectors.RUNTIME_HARDWARE_SELECT)
@@ -131,21 +139,20 @@ class ColabSession:
             self.page.click(selectors.RUNTIME_SAVE)
             self.page.wait_for_timeout(500)
 
-        # Click main Connect button.
-        connect = self.page.locator(selectors.CONNECT_BUTTON).first
+        # Click Connect; suppress if already connected (button gone).
         with contextlib.suppress(Exception):
-            connect.click(timeout=5_000)
-        # Wait for the "Connected" state — connect button text changes / disappears.
-        self.page.wait_for_function(
-            "() => !!document.querySelector('colab-connect-button')?.shadowRoot?.querySelector('[connected]')"
-            "|| !!document.querySelector('[aria-label*=\"Connected\"]')",
-            timeout=120_000,
-        )
+            self.page.locator(selectors.CONNECT_BUTTON).first.click(timeout=5_000)
+        # Brief settle so the click registers before run_cell starts.
+        self.page.wait_for_timeout(2_000)
 
     # ---------- Cell execution ----------
 
     def _cell_locator(self, cell_id: str):
         return self.page.locator(selectors.CELL_BY_ID.format(cell_id=cell_id))
+
+    def _cell_is_busy(self, cell) -> bool:
+        classes = cell.get_attribute("class") or ""
+        return "running" in classes or cell.locator("[busy]").count() > 0
 
     def run_cell(self, cell_id: str, timeout_sec: int = DEFAULT_RUN_TIMEOUT) -> RunResult:
         cell = self._cell_locator(cell_id)
@@ -156,11 +163,27 @@ class ColabSession:
         start = time.time()
         run.click()
 
-        # Wait until the cell is no longer marked busy.
+        # Two-phase wait:
+        # 1. Wait until we observe the cell entered a running state (or until
+        #    `start_grace` elapses — runtime startup can delay the running mark).
+        # 2. Then wait until it leaves running.
+        # Without phase 1, an unstarted cell would `break` immediately and we'd
+        # collect empty output before the cell actually ran.
         deadline = start + timeout_sec
+        start_grace = start + 60  # give Colab up to 60s to mark the cell running
+        saw_running = False
+
         while time.time() < deadline:
-            classes = cell.get_attribute("class") or ""
-            if "running" not in classes and not cell.locator("[busy]").count():
+            is_running = self._cell_is_busy(cell)
+            if is_running:
+                saw_running = True
+            elif saw_running:
+                break  # Was running, now isn't → done.
+            elif time.time() > start_grace:
+                # Grace expired and we never saw it run. Either the cell ran
+                # too fast for our 0.4s poll, or Colab silently rejected it.
+                # Either way, collecting output is the right move — if there's
+                # nothing, status will reflect that.
                 break
             time.sleep(0.4)
         else:
@@ -172,9 +195,10 @@ class ColabSession:
 
     def run_all(self, timeout_sec: int = DEFAULT_RUN_TIMEOUT * 4) -> list[RunResult]:
         # Iterate cells in DOM order — that's the executable order in Colab.
+        # The DOM id is `cell-<nbformat-id>`; strip the prefix.
         ids = self.page.eval_on_selector_all(
-            "div.cell[data-cell-id]",
-            "els => els.map(e => e.getAttribute('data-cell-id'))",
+            selectors.CELL_LIST,
+            "els => els.map(e => (e.getAttribute('id') || '').replace(/^cell-/, '')).filter(Boolean)",
         )
         out: list[RunResult] = []
         for cid in ids:
@@ -184,22 +208,35 @@ class ColabSession:
     # ---------- Output capture ----------
 
     def _collect_output(self, cell_id: str, cell, start: float) -> RunResult:
+        """Collect output from BOTH the parent cell DOM and any nested iframes.
+
+        Colab renders rich output (errors, plots, HTML) in a per-cell iframe
+        served from `*.colab.googleusercontent.com/outputframe.html`. Plain
+        stdout streams in the parent DOM at `.stream.output_text`. We check
+        both because we don't know upfront which kind of output a cell produced.
+        """
         duration_ms = int((time.time() - start) * 1000)
 
-        # Text output
+        # Parent-DOM text — stdout streams live here.
         text_nodes = cell.locator(selectors.CELL_OUTPUT_TEXT)
         text = "\n".join(text_nodes.all_inner_texts()) if text_nodes.count() else ""
 
-        # Error detection
-        err_nodes = cell.locator(selectors.CELL_ERROR)
-        error_text = ""
-        if err_nodes.count():
-            error_text = "\n".join(err_nodes.all_inner_texts())
+        # Errors + images live inside the cell's output iframe.
+        error_text, iframe_imgs = self._read_iframe_outputs(cell)
 
-        # Images
+        # Parent-DOM error fallback (older schemas / edge cases).
+        if not error_text:
+            err_nodes = cell.locator(selectors.CELL_ERROR)
+            if err_nodes.count():
+                error_text = "\n".join(err_nodes.all_inner_texts())
+
         images: list[str] = []
         if self.cfg.get("save_images", True):
-            images = self._save_images(cell_id, cell)
+            # Combine parent-DOM imgs (rare) with iframe imgs (common).
+            parent_imgs = cell.locator(selectors.CELL_OUTPUT_IMAGE).evaluate_all(
+                "els => els.map(e => e.src)"
+            )
+            images = self._save_image_srcs(cell_id, parent_imgs + iframe_imgs)
 
         status = "error" if error_text else "ok"
         return RunResult(
@@ -212,16 +249,30 @@ class ColabSession:
             duration_ms=duration_ms,
         )
 
-    def _save_images(self, cell_id: str, cell) -> list[str]:
-        """Pull <img> src blobs out of a cell's output area, save as PNG."""
+    def _read_iframe_outputs(self, cell) -> tuple[str, list[str]]:
+        """Drill into per-cell output iframes; return (error_text, [img_srcs])."""
+        error_text = ""
+        img_srcs: list[str] = []
+        n = cell.locator("iframe").count()
+        for i in range(n):
+            frame = cell.frame_locator("iframe").nth(i)
+            try:
+                err = frame.locator(selectors.CELL_ERROR_IFRAME)
+                if err.count():
+                    error_text += "\n".join(err.all_inner_texts())
+                imgs = frame.locator("img").evaluate_all("els => els.map(e => e.src)")
+                img_srcs.extend(s for s in imgs if s)
+            except Exception:
+                # Frame may be cross-origin or detached; skip.
+                continue
+        return error_text, img_srcs
+
+    def _save_image_srcs(self, cell_id: str, srcs: list[str]) -> list[str]:
+        """Decode base64 image srcs and write as PNG. Skips non-data URIs."""
         out_dir = _paths.RUNS_DIR / self.file_id / cell_id
         out_dir.mkdir(parents=True, exist_ok=True)
-
-        srcs = cell.locator(selectors.CELL_OUTPUT_IMAGE).evaluate_all("els => els.map(e => e.src)")
         saved: list[str] = []
         for i, src in enumerate(srcs):
-            if not src:
-                continue
             data = _decode_img_src(src)
             if data is None:
                 continue
