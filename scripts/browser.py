@@ -217,25 +217,36 @@ class ColabSession:
     def _collect_output(self, cell_id: str, cell, start: float) -> RunResult:
         """Collect output from BOTH the parent cell DOM and any nested iframes.
 
-        Colab renders rich output (errors, plots, HTML) in a per-cell iframe
-        served from `*.colab.googleusercontent.com/outputframe.html`. Plain
-        stdout streams in the parent DOM at `.stream.output_text`. We check
-        both because we don't know upfront which kind of output a cell produced.
+        Colab splits cell output across two surfaces:
+        - Parent DOM `.stream.output_text` → plain stdout (print, etc.)
+        - Per-cell `<iframe>` from *.colab.googleusercontent.com/outputframe.html
+          → rich output (errors, plot images, DataFrame HTML tables, formatted
+          repr's of objects, anything with a non-text/plain MIME type).
+
+        We collect from both. If parent stream is empty (no print) we fall
+        back to iframe rich text, which catches DataFrames, dict/list reprs,
+        and other "execute_result" output that ipykernel routed via display_data.
         """
         duration_ms = int((time.time() - start) * 1000)
 
-        # Parent-DOM text — stdout streams live here.
-        text_nodes = cell.locator(selectors.CELL_OUTPUT_TEXT)
-        text = "\n".join(text_nodes.all_inner_texts()) if text_nodes.count() else ""
+        # Parent-DOM stream text (plain stdout).
+        parent_text_nodes = cell.locator(selectors.CELL_OUTPUT_TEXT)
+        parent_text = (
+            "\n".join(parent_text_nodes.all_inner_texts()) if parent_text_nodes.count() else ""
+        )
 
-        # Errors + images live inside the cell's output iframe.
-        error_text, iframe_imgs = self._read_iframe_outputs(cell)
+        # Drill into the iframe — error text, image srcs, rich text.
+        error_text, iframe_imgs, iframe_rich_text = self._read_iframe_outputs(cell)
 
         # Parent-DOM error fallback (older schemas / edge cases).
         if not error_text:
             err_nodes = cell.locator(selectors.CELL_ERROR)
             if err_nodes.count():
                 error_text = "\n".join(err_nodes.all_inner_texts())
+
+        # Output text: prefer stream; fall back to rich. Concatenate when both
+        # have distinct content (rare — usually only one surface produces text).
+        text = _merge_output_text(parent_text, iframe_rich_text)
 
         images: list[str] = []
         if self.cfg.get("save_images", True):
@@ -256,23 +267,45 @@ class ColabSession:
             duration_ms=duration_ms,
         )
 
-    def _read_iframe_outputs(self, cell) -> tuple[str, list[str]]:
-        """Drill into per-cell output iframes; return (error_text, [img_srcs])."""
+    def _read_iframe_outputs(self, cell) -> tuple[str, list[str], str]:
+        """Drill into per-cell output iframes.
+
+        Returns (error_text, [img_srcs], rich_text).
+
+        The rich_text bucket catches DataFrame HTML tables, formatted reprs,
+        and anything that ipykernel emits via `display_data` rather than
+        `stream`. Selectors target Jupyter's standard output classes that
+        Colab renders inside the outputframe iframe. Errors are extracted
+        separately so cells with both an error and prior output don't double-
+        count the traceback.
+        """
         error_text = ""
         img_srcs: list[str] = []
+        rich_text_parts: list[str] = []
         n = cell.locator("iframe").count()
         for i in range(n):
             frame = cell.frame_locator("iframe").nth(i)
             try:
                 err = frame.locator(selectors.CELL_ERROR_IFRAME)
-                if err.count():
+                err_count = err.count()
+                if err_count:
                     error_text += "\n".join(err.all_inner_texts())
+
                 imgs = frame.locator("img").evaluate_all("els => els.map(e => e.src)")
                 img_srcs.extend(s for s in imgs if s)
+
+                # Rich text — DataFrames, formatted reprs, HTML tables, repr output.
+                # Skip when this iframe is the error iframe (already captured).
+                if not err_count:
+                    rich_nodes = frame.locator(selectors.CELL_OUTPUT_RICH)
+                    if rich_nodes.count():
+                        chunks = [t for t in rich_nodes.all_inner_texts() if t.strip()]
+                        if chunks:
+                            rich_text_parts.append("\n".join(chunks))
             except Exception:
                 # Frame may be cross-origin or detached; skip.
                 continue
-        return error_text, img_srcs
+        return error_text, img_srcs, "\n".join(rich_text_parts).strip()
 
     def _save_image_srcs(self, cell_id: str, srcs: list[str]) -> list[str]:
         """Decode base64 image srcs and write as PNG. Skips non-data URIs."""
@@ -298,6 +331,23 @@ def _decode_img_src(src: str) -> bytes | None:
         return base64.b64decode(m.group(1))
     except Exception:
         return None
+
+
+def _merge_output_text(parent: str, rich: str) -> str:
+    """Combine parent-stream text and iframe rich text, deduplicated.
+
+    Cells often emit on only one surface — usually parent for stdout, iframe
+    for DataFrame/object reprs. When both have content, we concatenate but
+    skip the rich text if its content is a substring of the parent (Colab
+    occasionally mirrors stream output into the iframe's rendering chrome).
+    """
+    parent = (parent or "").strip()
+    rich = (rich or "").strip()
+    if not parent:
+        return rich
+    if not rich or rich in parent:
+        return parent
+    return f"{parent}\n{rich}"
 
 
 # ---------- Public entrypoints ----------

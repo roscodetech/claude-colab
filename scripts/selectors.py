@@ -7,7 +7,7 @@ Versioning: bump SCHEMA_VERSION when selectors meaningfully change so users
 running stale plugins get a clear hint.
 """
 
-SCHEMA_VERSION = "2026-05-07"
+SCHEMA_VERSION = "2026-05-07b"
 
 # Top-level chrome
 CONNECT_BUTTON = 'colab-connect-button, [aria-label*="Connect"]'
@@ -29,6 +29,12 @@ CELL_ERROR = ".output-area .error-output, .output_subarea.output_error"
 # Inside Colab's per-cell output iframe, errors render as `.error.output-error`.
 # Images live in <img> tags. Selectors apply to the iframe's document.
 CELL_ERROR_IFRAME = ".error, .output-error, .traceback"
+# Rich-text containers inside the iframe — DataFrame tables, formatted reprs,
+# HTML output, execute_result output. Order matters: more-specific first so
+# the inner text doesn't get double-counted by a wrapping ancestor.
+CELL_OUTPUT_RICH = (
+    ".output_html, .output_text, .output-content, .stream, .rendered_html, table.dataframe, pre"
+)
 CELL_BUSY = ".cell.running, .cell[busy]"
 
 # "Run all" lives under the Runtime menu
