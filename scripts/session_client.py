@@ -23,7 +23,12 @@ from typing import Any
 from . import paths as _paths
 
 CONNECT_TIMEOUT_SEC = 5
-COMMAND_TIMEOUT_SEC = 900  # cells can run a long time; daemon does its own per-cell timeout
+# Per-recv timeout. The daemon writes a heartbeat / progress line on every
+# state change for streaming commands (run_all_native), and run_cell finishes
+# in one shot — neither sits silent for >~10 min in practice. Bump well past
+# that so a quiet stretch in the middle of a 30-min training cell doesn't
+# trip recv().
+COMMAND_TIMEOUT_SEC = 1800
 
 
 @dataclass
@@ -105,27 +110,73 @@ def session_for(file_id: str) -> SessionInfo | None:
 
 
 def send(cmd: str, info: SessionInfo | None = None, **args: Any) -> dict[str, Any]:
-    """Send one command, read one JSON-line response. Raises on connect failure."""
+    """Send one command, read the terminal JSON-line response. Raises on
+    connect failure.
+
+    For streaming commands (run_all_native) intermediate `{"progress": true}`
+    lines are silently dropped; this returns the final `{"done": true}` line.
+    Use `send_stream` to observe progress events.
+    """
     if info is None:
         info = get_active_session()
     if info is None:
         raise SessionUnavailable("no active session")
 
+    final: dict[str, Any] | None = None
+    for line in _send_stream(cmd, info=info, **args):
+        # Skip per-progress heartbeats; only keep terminal responses.
+        if line.get("progress") and not line.get("done"):
+            continue
+        final = line
+        if line.get("done") or line.get("status") in ("ok", "error"):
+            break
+    if final is None:
+        raise SessionUnavailable("daemon closed connection without responding")
+    return final
+
+
+def send_stream(
+    cmd: str, info: SessionInfo | None = None, **args: Any
+):
+    """Send one command, yield each JSON-line response as it arrives.
+
+    Use for streaming commands (run_all_native): the daemon emits a `progress`
+    line on every state change, then a final `done: true` line. The yielded
+    iterator finishes when the daemon closes the connection.
+    """
+    if info is None:
+        info = get_active_session()
+    if info is None:
+        raise SessionUnavailable("no active session")
+    yield from _send_stream(cmd, info=info, **args)
+
+
+def _send_stream(cmd: str, info: SessionInfo, **args: Any):
     sock = socket.create_connection(("127.0.0.1", info.port), timeout=CONNECT_TIMEOUT_SEC)
     sock.settimeout(COMMAND_TIMEOUT_SEC)
     try:
         payload = json.dumps({"cmd": cmd, **args}) + "\n"
         sock.sendall(payload.encode("utf-8"))
-        # Read one line of response. Daemon writes one JSON line per command.
         buf = bytearray()
-        while not buf.endswith(b"\n"):
+        sent_anything = False
+        while True:
             chunk = sock.recv(8192)
             if not chunk:
                 break
             buf.extend(chunk)
-        if not buf:
+            # Emit complete lines as we get them.
+            while b"\n" in buf:
+                line, _, rest = buf.partition(b"\n")
+                buf = bytearray(rest)
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line.decode("utf-8"))
+                    sent_anything = True
+                except json.JSONDecodeError:
+                    continue
+        if not sent_anything:
             raise SessionUnavailable("daemon closed connection without responding")
-        return json.loads(buf.decode("utf-8").rstrip("\n"))
     finally:
         with contextlib.suppress(OSError):
             sock.close()
