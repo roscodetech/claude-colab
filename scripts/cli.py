@@ -235,22 +235,30 @@ def cmd_status(args: argparse.Namespace) -> int:
         return _emit({"status": "ok", "active": False}, args.human)
 
     # Verify the daemon is responsive, not just alive.
-    responsive = session_client.ping(info)
-    return _emit(
-        {
-            "status": "ok",
-            "active": True,
-            "responsive": responsive,
-            "session": {
-                "pid": info.pid,
-                "port": info.port,
-                "file_id": info.file_id,
-                "runtime": info.runtime,
-                "uptime_sec": int(time.time() - info.started_at),
-            },
+    # Use a richer ping that also surfaces in-flight cell progress.
+    try:
+        ping_response = session_client.send("ping", info=info)
+        responsive = ping_response.get("status") == "ok"
+        running = ping_response.get("running")
+    except (session_client.SessionUnavailable, OSError):
+        responsive = False
+        running = None
+
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "active": True,
+        "responsive": responsive,
+        "session": {
+            "pid": info.pid,
+            "port": info.port,
+            "file_id": info.file_id,
+            "runtime": info.runtime,
+            "uptime_sec": int(time.time() - info.started_at),
         },
-        args.human,
-    )
+    }
+    if running:
+        payload["running"] = running  # {cell_id, elapsed_sec}
+    return _emit(payload, args.human)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
