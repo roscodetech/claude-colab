@@ -10,6 +10,7 @@ def test_load_returns_defaults_when_no_file():
     assert cfg["drive_scope_folder"] == "claude-colab"
     assert cfg["debugger_max_retries"] == 2
     assert cfg["save_images"] is True
+    assert cfg["oauth_scope"] == "file"  # narrow default
 
 
 def test_save_then_load_round_trip():

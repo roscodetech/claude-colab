@@ -10,6 +10,8 @@ import io
 import json
 from contextlib import redirect_stdout
 
+import pytest
+
 from scripts import cli
 
 
@@ -138,3 +140,65 @@ def test_human_flag_works_on_scope_too():
     rc, out = _run_raw("scope", "--human")
     assert rc == 0
     assert "\n" in out
+
+
+# --- OAuth scope expansion (PR #3)
+
+
+def test_scope_default_is_file():
+    rc, data = _run("scope")
+    assert rc == 0
+    assert data["scope"]["oauth"] == "file"
+
+
+def test_scope_oauth_full_widens_and_emits_note(monkeypatch):
+    # Stub set_oauth_scope so we don't actually touch token files.
+    from scripts import config as cfg_mod
+
+    def fake_set(scope):
+        cfg_mod.update(oauth_scope=scope)
+        return cfg_mod.load()
+
+    monkeypatch.setattr("scripts.cli.auth.set_oauth_scope", fake_set)
+
+    rc, data = _run("scope", "--oauth", "full")
+    assert rc == 0
+    assert data["scope"]["oauth"] == "full"
+    assert "re-run /colab-auth" in data.get("note", "").lower()
+
+
+def test_scope_oauth_unchanged_no_note(monkeypatch):
+    """No note emitted when --oauth value matches current config."""
+    from scripts import config as cfg_mod
+
+    cfg_mod.update(oauth_scope="file")
+    monkeypatch.setattr(
+        "scripts.cli.auth.set_oauth_scope",
+        lambda s: pytest.fail("set_oauth_scope should not be called when value unchanged"),
+    )
+
+    rc, data = _run("scope", "--oauth", "file")
+    assert rc == 0
+    assert "note" not in data
+
+
+def test_scope_oauth_invalid_value():
+    # argparse rejects at the parser level (choices=...) by raising SystemExit.
+    with pytest.raises(SystemExit):
+        _run("scope", "--oauth", "readonly")
+
+
+def test_scope_combines_oauth_and_folder(monkeypatch):
+    from scripts import config as cfg_mod
+
+    def fake_set(scope):
+        cfg_mod.update(oauth_scope=scope)
+        return cfg_mod.load()
+
+    monkeypatch.setattr("scripts.cli.auth.set_oauth_scope", fake_set)
+
+    rc, data = _run("scope", "--oauth", "full", "--folder", "my-stuff")
+    assert rc == 0
+    assert data["scope"]["oauth"] == "full"
+    assert data["scope"]["folder"] == "my-stuff"
+    assert data["scope"]["full"] is False  # folder filter still narrow

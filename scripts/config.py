@@ -9,6 +9,13 @@ from . import paths as _paths
 from .paths import ensure_home
 
 DEFAULTS: dict[str, Any] = {
+    # OAuth scope: "file" = drive.file (only files we created or were opened
+    # with this app — narrowest, default). "full" = drive (read+write all
+    # files in the user's Drive — required to edit pre-existing notebooks).
+    "oauth_scope": "file",
+    # Folder filter on Drive listing — orthogonal to OAuth scope. False
+    # restricts queries to drive_scope_folder; True searches all of Drive
+    # (subject to whatever OAuth scope allows).
     "drive_scope_folder": "claude-colab",
     "drive_scope_full": False,
     "save_images": True,
