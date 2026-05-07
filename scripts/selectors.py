@@ -7,7 +7,7 @@ Versioning: bump SCHEMA_VERSION when selectors meaningfully change so users
 running stale plugins get a clear hint.
 """
 
-SCHEMA_VERSION = "2026-05-06"
+SCHEMA_VERSION = "2026-05-07"
 
 # Top-level chrome
 CONNECT_BUTTON = 'colab-connect-button, [aria-label*="Connect"]'
@@ -16,14 +16,19 @@ RUNTIME_CHANGE = 'text="Change runtime type"'
 RUNTIME_HARDWARE_SELECT = 'mwc-select[aria-label*="Hardware accelerator"]'
 RUNTIME_SAVE = 'paper-button[dialog-confirm], button:has-text("Save")'
 
-# Cells — Colab wraps each cell in a `<div class="cell ...">` with a stable
-# `data-cell-id` attribute that maps to the nbformat id (Colab adds it on load).
-CELL_BY_ID = 'div.cell[data-cell-id="{cell_id}"]'
+# Cells — Colab wraps each cell in a `<div class="cell code notebook-cell">`
+# with `id="cell-<nbformat-id>"` (stable nbformat 4.5 ids preserved on load).
+# Probed empirically 2026-05-07; previous schema used data-cell-id which is gone.
+CELL_LIST = "div.cell.notebook-cell"  # all cells in DOM order
+CELL_BY_ID = 'div.cell[id="cell-{cell_id}"]'
 CELL_RUN_BUTTON = 'colab-run-button, [aria-label*="Run cell"]'
 CELL_OUTPUT_AREA = ".output-area, .output_area"
 CELL_OUTPUT_TEXT = ".output-area .output-content, .output-content"
 CELL_OUTPUT_IMAGE = ".output-area img, .output_area img"
 CELL_ERROR = ".output-area .error-output, .output_subarea.output_error"
+# Inside Colab's per-cell output iframe, errors render as `.error.output-error`.
+# Images live in <img> tags. Selectors apply to the iframe's document.
+CELL_ERROR_IFRAME = ".error, .output-error, .traceback"
 CELL_BUSY = ".cell.running, .cell[busy]"
 
 # "Run all" lives under the Runtime menu

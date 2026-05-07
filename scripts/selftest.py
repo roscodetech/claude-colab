@@ -17,16 +17,10 @@ from . import browser, drive, notebook, selectors
 
 CANARY_CELLS = [
     ("code", "print('hello from claude-colab')"),
+    # Don't pin matplotlib backend — Colab's inline produces the <img> we need.
     (
         "code",
-        (
-            "import matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "plt.plot([1, 2, 3], [1, 4, 9])\n"
-            "plt.savefig('canary.png')\n"
-            "plt.show()\n"
-        ),
+        ("import matplotlib.pyplot as plt\nplt.plot([1, 2, 3], [1, 4, 9])\nplt.show()\n"),
     ),
     ("code", "raise ValueError('intentional canary error')"),
 ]
