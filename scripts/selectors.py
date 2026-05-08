@@ -7,7 +7,7 @@ Versioning: bump SCHEMA_VERSION when selectors meaningfully change so users
 running stale plugins get a clear hint.
 """
 
-SCHEMA_VERSION = "2026-05-07c"
+SCHEMA_VERSION = "2026-05-08a"
 
 # Top-level chrome
 CONNECT_BUTTON = 'colab-connect-button, [aria-label*="Connect"]'
@@ -17,16 +17,33 @@ CONNECT_BUTTON = 'colab-connect-button, [aria-label*="Connect"]'
 # as documentation of the parent class.
 RUNTIME_MENU_CLASS = ".goog-menu-button"
 RUNTIME_CHANGE = 'text="Change runtime type"'
-# WARNING — runtime-type dialog selectors have shifted to Material 3
-# (md-* components) and we haven't pinned the exact hardware-picker selector
-# yet. Probed empirically 2026-05-07: dialog contains md-text-button (Save,
-# Cancel) but the hardware accelerator chooser uses a different element type
-# we haven't isolated. Run scripts/probe_runtime_dialog.py to enumerate
-# candidates if you're fixing this. Until then, --runtime gpu/tpu open paths
-# fail at this dialog and fall back to whatever runtime Colab assigns by
-# default (usually CPU).
-RUNTIME_HARDWARE_SELECT = 'mwc-select[aria-label*="Hardware accelerator"]'
-RUNTIME_SAVE = 'paper-button[dialog-confirm], button:has-text("Save")'
+# Runtime change dialog (probed 2026-05-08): dialog is `mwc-dialog
+# .change-runtime-type` containing a single web component
+# `<colab-runtime-attributes-selector>` whose internals (radios, switches,
+# selects) live in shadow DOM. Playwright's CSS locators auto-pierce open
+# shadow roots, so `mwc-radio[aria-label="A100 GPU"]` works directly.
+#
+# Hardware is a list of mwc-radio buttons keyed by aria-label. A100 / L4 / T4
+# / H100 / G4 are GPU variants; v2-8 / v5e are TPU; CPU is CPU. We don't
+# know in advance which Colab will offer the user (varies by quota & region),
+# so we probe a priority list and click the first match.
+RUNTIME_HARDWARE_GPU_PRIORITY = [
+    "A100 GPU",
+    "L4 GPU",
+    "T4 GPU",
+    "H100 GPU",
+    "G4 GPU",
+    "GPU",  # generic fallback
+]
+RUNTIME_HARDWARE_TPU_PRIORITY = [
+    "v5e TPU",
+    "v2-8 TPU",
+    "TPU",
+]
+RUNTIME_HARDWARE_CPU = "CPU"
+# Save / Cancel are the dialog's md-text-buttons in light DOM (not in the
+# selector's shadow root).
+RUNTIME_SAVE = 'mwc-dialog.change-runtime-type md-text-button:has-text("Save")'
 
 # Cells — Colab wraps each cell in a `<div class="cell code notebook-cell">`
 # with `id="cell-<nbformat-id>"` (stable nbformat 4.5 ids preserved on load).
