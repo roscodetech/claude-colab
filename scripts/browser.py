@@ -108,25 +108,158 @@ class ColabSession:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         try:
-            if self._ctx:
-                self._ctx.close()
+            self._disconnect_runtime_best_effort()
         finally:
-            if self._pw:
-                self._pw.stop()
+            try:
+                if self._ctx:
+                    self._ctx.close()
+            finally:
+                if self._pw:
+                    self._pw.stop()
 
-    # ---------- Runtime ----------
+    def _disconnect_runtime_best_effort(self) -> None:
+        """Tell Colab to release the runtime before tearing the browser down.
+
+        `_ctx.close()` alone is interpreted as a temporary disconnect; the
+        server-side runtime keeps running for ~12 h waiting for a
+        reconnection, which burns one of the (very tight) Pro+
+        concurrent-session slots. Sending the explicit "Disconnect and
+        delete runtime" command frees the slot immediately.
+
+        Always attempts the menu sequence rather than gating on a probe —
+        the menu item is a no-op when no runtime is attached (Colab
+        either omits it from the menu or it silently fails), so over-
+        attempting is harmless and we avoid every false-negative the
+        probe could hand us. Each step writes its outcome to session.log
+        so a maintainer can audit teardowns.
+        """
+        page = self.page
+        if page is None:
+            self._log_lifecycle("disconnect: no page, skipping")
+            return
+        clicked_menu = False
+        clicked_disconnect = False
+        confirmed = False
+        try:
+            page.locator(selectors.RUNTIME_MENU_CLASS).filter(
+                has_text="Runtime"
+            ).first.click(timeout=2_500)
+            clicked_menu = True
+            # Menu item is only present when a runtime is attached. If not,
+            # locator times out at 2 s and we exit cleanly via the except.
+            page.locator('text="Disconnect and delete runtime"').first.click(
+                timeout=2_000
+            )
+            clicked_disconnect = True
+            # Confirmation dialog: "Are you sure you want to disconnect..."
+            page.locator(
+                'mwc-dialog[open] md-text-button[slot="primaryAction"], '
+                'mwc-dialog[open] md-text-button[dialogaction="ok"]'
+            ).first.click(timeout=2_000)
+            confirmed = True
+            page.wait_for_timeout(800)
+        except Exception as e:
+            self._log_lifecycle(
+                f"disconnect: stopped at "
+                f"menu={clicked_menu} item={clicked_disconnect} confirm={confirmed} "
+                f"({type(e).__name__}: {str(e)[:120]})"
+            )
+            # Click body to close any half-open menu so it doesn't block
+            # the next session's interactions on this profile.
+            with contextlib.suppress(Exception):
+                page.locator("body").click(timeout=1_000)
+            return
+        self._log_lifecycle("disconnect: ok (runtime released)")
+
+    def _log_lifecycle(self, msg: str) -> None:
+        """Append a lifecycle event to ~/.claude-colab/session.log so daemon
+        teardowns are observable from the same surface as run-time logs."""
+        from .paths import SESSION_LOG_PATH
+
+        with contextlib.suppress(Exception), SESSION_LOG_PATH.open(
+            "a", encoding="utf-8"
+        ) as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+
+    # ---------- Runtime liveness probe ----------
+
+    def attached_runtime_kind(self) -> str | None:
+        """Return the accelerator kind ('cpu' / 'gpu' / 'tpu') currently
+        attached to the notebook, or None if no runtime is attached.
+
+        Detection is DOM-driven and cheap: Colab's runtime status indicator
+        in the top-right exposes its state via the connect button's
+        aria-label. Fresh notebook → "Connect to a hosted runtime"; warm
+        runtime → "Connected to Python 3 (..., A100 GPU)" or similar.
+
+        Best-effort. Returns None on any probe failure so callers fall back
+        to the explicit Change runtime + Connect flow.
+        """
+        if self.page is None:
+            return None
+        try:
+            label = self.page.locator(selectors.CONNECT_BUTTON).first.get_attribute(
+                "aria-label", timeout=2_000
+            ) or ""
+        except Exception:
+            return None
+        low = label.lower()
+        # The disconnected state has "connect to" with no past-tense ed —
+        # critically distinct from "connected to". Use a word-boundary
+        # check so the "connect to" substring of "connected to" doesn't
+        # false-positive as disconnected.
+        if re.search(r"\bconnect\s+to\b", low) and "connected" not in low:
+            return None
+        if "connected" not in low:
+            # Unknown state (label changed shape) — refuse to guess.
+            return None
+        # Map detected accelerator. Colab labels the line as "Python 3,
+        # A100 GPU, High-RAM" or similar; substring match against the
+        # accelerator priority lists tells us the kind.
+        for variant in selectors.RUNTIME_HARDWARE_GPU_PRIORITY:
+            if variant.lower() in low:
+                return "gpu"
+        for variant in selectors.RUNTIME_HARDWARE_TPU_PRIORITY:
+            if variant.lower() in low:
+                return "tpu"
+        if "gpu" in low:
+            return "gpu"
+        if "tpu" in low:
+            return "tpu"
+        return "cpu"
 
     def connect_runtime(self, kind: str | None = None) -> None:
-        """Best-effort: click Connect, optionally change runtime type.
+        """Best-effort: reuse an attached runtime if compatible, else Change
+        runtime type → Save → Connect.
+
+        Past behaviour was to *always* open Change runtime type when kind !=
+        cpu, which caused Colab to spawn a fresh runtime even when a
+        compatible one was already attached. Each spawned-but-then-abandoned
+        runtime sat as a 12 h zombie holding a Pro+ concurrent-session slot,
+        and a few rapid /colab-open cycles were enough to fully starve the
+        account. The probe-first-then-spawn flow below avoids that whenever
+        Colab has already wired a runtime to the notebook for this account.
 
         Does NOT wait for a confirmed "connected" state. Past attempts at that
         relied on shadow-DOM probes that break every time Colab ships UI
         changes (caught by /colab-selftest 2026-05-07). Colab auto-connects
         when you click Run on a cell anyway, so we let run_cell absorb any
-        remaining connection time via its own per-cell timeout. Trade-off:
-        first cell of a fresh notebook can take ~30s longer than steady-state.
+        remaining connection time via its own per-cell timeout.
         """
         kind = (kind or self.runtime or self.cfg.get("default_runtime") or "cpu").lower()
+
+        # Reuse path: if a compatible runtime is already attached, skip
+        # the Change-runtime-type dance entirely. This is the single most
+        # impactful fix for the runtime-leak failure mode (#runtime-leak).
+        attached = self.attached_runtime_kind()
+        if attached is not None and (kind == "cpu" or attached == kind):
+            # Already connected to the right kind — nothing to do.
+            return
+        if attached is not None and attached != kind:
+            # Wrong kind attached — we'll proceed into Change runtime type
+            # below, which will prompt a "Discard current runtime?" warning
+            # that the dialog flow already handles.
+            pass
 
         if kind != "cpu":
             # Change accelerator before connecting — switching after forces restart.

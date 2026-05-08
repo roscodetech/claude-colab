@@ -173,14 +173,6 @@ class Daemon:
                         self._running_cell = None
                         self._running_started_at = None
                 return {"status": "ok", "final_state": final}
-            if cmd == "run_all_native":
-                # Streaming command — handled by handle_stream(); this branch
-                # should never be reached because _serve_one routes
-                # run_all_native through handle_stream first.
-                return {
-                    "status": "error",
-                    "error": "run_all_native is a streaming command; use send_stream",
-                }
             if cmd == "quit":
                 self._stop.set()
                 return {"status": "ok", "shutting_down": True}

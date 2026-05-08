@@ -316,6 +316,10 @@ def cmd_run(args: argparse.Namespace) -> int:
                 )
             if want_all:
                 res = session_client.send("run_all", info=sess)
+                if res.get("status") != "ok":
+                    return _fail(
+                        f"run_all failed: {res.get('error', '?')}", human=args.human
+                    )
                 return _emit(
                     {"status": "ok", "via": "session", "results": res.get("results", [])},
                     args.human,
@@ -323,6 +327,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             res = session_client.send(
                 "run_cell", info=sess, cell_id=args.cell, timeout_sec=args.timeout
             )
+            if res.get("status") != "ok":
+                # Surface the daemon's actual error rather than emitting a
+                # misleading status: ok with result: null.
+                return _fail(
+                    f"run_cell failed: {res.get('error', '?')}", human=args.human
+                )
             return _emit(
                 {"status": "ok", "via": "session", "result": res.get("result")}, args.human
             )
