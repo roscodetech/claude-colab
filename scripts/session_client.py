@@ -135,9 +135,7 @@ def send(cmd: str, info: SessionInfo | None = None, **args: Any) -> dict[str, An
     return final
 
 
-def send_stream(
-    cmd: str, info: SessionInfo | None = None, **args: Any
-):
+def send_stream(cmd: str, info: SessionInfo | None = None, **args: Any):
     """Send one command, yield each JSON-line response as it arrives.
 
     Use for streaming commands (run_all_native): the daemon emits a `progress`

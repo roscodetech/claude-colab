@@ -244,6 +244,7 @@ class Daemon:
                         # We can't yield from inside Playwright's loop, so we
                         # spawn it in a thread and drain a queue.
                         import queue as _queue
+
                         q: _queue.Queue = _queue.Queue()
                         result_holder: dict[str, Any] = {}
 
@@ -307,9 +308,7 @@ class Daemon:
                     # idle on the wire (we only write).
                     conn.settimeout(None)
                     for line in self.handle_stream(payload):
-                        conn.sendall(
-                            (json.dumps(line, default=str) + "\n").encode("utf-8")
-                        )
+                        conn.sendall((json.dumps(line, default=str) + "\n").encode("utf-8"))
                 else:
                     response = self.handle(payload)
                     conn.sendall((json.dumps(response, default=str) + "\n").encode("utf-8"))
@@ -317,7 +316,9 @@ class Daemon:
                 _log(f"connection error: {e}\n{traceback.format_exc()}")
                 with contextlib.suppress(OSError):
                     conn.sendall(
-                        (json.dumps({"status": "error", "done": True, "error": str(e)}) + "\n").encode("utf-8")
+                        (
+                            json.dumps({"status": "error", "done": True, "error": str(e)}) + "\n"
+                        ).encode("utf-8")
                     )
 
     def heartbeat_loop(self) -> None:
