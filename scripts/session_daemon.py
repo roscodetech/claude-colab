@@ -156,6 +156,24 @@ class Daemon:
                         self._running_started_at = None
                 return {"status": "ok", "results": [r.to_dict() for r in results]}
             if cmd == "run_all_native":
+                # Synchronous variant — blocks the connection until done.
+                # Streaming via handle_stream tripped Playwright's greenlet
+                # thread-affinity (page.click / page.keyboard.press are bound
+                # to the daemon's main thread). Locator-based ops survive
+                # cross-thread but page-level ones don't, and run_all_native
+                # needs both. Block here; the client's COMMAND_TIMEOUT_SEC
+                # is bumped to absorb long training notebooks.
+                timeout = int(payload.get("timeout_sec", 3600))
+                with self._session_lock:
+                    self._running_cell = "<all-native>"
+                    self._running_started_at = time.time()
+                    try:
+                        final = self.session.run_all_native(timeout_sec=timeout)
+                    finally:
+                        self._running_cell = None
+                        self._running_started_at = None
+                return {"status": "ok", "final_state": final}
+            if cmd == "run_all_native":
                 # Streaming command — handled by handle_stream(); this branch
                 # should never be reached because _serve_one routes
                 # run_all_native through handle_stream first.
@@ -211,7 +229,13 @@ class Daemon:
     # Commands listed here use a generator response — one JSON line per state
     # change, terminated by a `done: true` line. _serve_one routes them
     # through handle_stream instead of handle.
-    STREAM_COMMANDS = ("run_all_native",)
+    #
+    # NOTE: run_all_native was originally a streaming command but its inner
+    # loop hits page.click / page.keyboard.press which Playwright pins to
+    # the daemon's main thread, so driving it from a per-connection thread
+    # raises greenlet.error. Until we move Playwright behind a main-thread
+    # work queue, run_all_native is served synchronously via handle().
+    STREAM_COMMANDS: tuple[str, ...] = ()
 
     def handle_stream(self, payload: dict):
         """Generator yielding one response dict per progress step.
@@ -230,51 +254,19 @@ class Daemon:
                 with self._session_lock:
                     self._running_cell = "<all>"
                     self._running_started_at = time.time()
-                    last: dict | None = None
-
-                    def _on_state(state):
-                        nonlocal last
-                        last = state
-                        _log(f"run_all_native: {state}")
-
+                    final: dict[str, Any] | None = None
                     try:
-                        # Stream each state change to the client by yielding from
-                        # the polling loop below; ColabSession.run_all_native
-                        # invokes _on_state every time .running/.queued change.
-                        # We can't yield from inside Playwright's loop, so we
-                        # spawn it in a thread and drain a queue.
-                        import queue as _queue
-
-                        q: _queue.Queue = _queue.Queue()
-                        result_holder: dict[str, Any] = {}
-
-                        def _runner():
-                            try:
-                                final = self.session.run_all_native(
-                                    timeout_sec=timeout,
-                                    on_state=lambda s: q.put(("progress", s)),
-                                )
-                                q.put(("done", final))
-                            except Exception as e:
-                                q.put(("error", str(e)))
-
-                        t = threading.Thread(target=_runner, daemon=True)
-                        t.start()
-                        while True:
-                            kind, payload_ = q.get()
-                            if kind == "progress":
-                                yield {"progress": True, "state": payload_}
-                            elif kind == "done":
-                                result_holder["final"] = payload_
-                                break
-                            elif kind == "error":
-                                yield {"status": "error", "done": True, "error": payload_}
-                                return
-                        yield {
-                            "status": "ok",
-                            "done": True,
-                            "final_state": result_holder["final"],
-                        }
+                        # Drive the generator directly — same OS thread does
+                        # the Playwright calls and yields events. Spawning a
+                        # worker thread here breaks Playwright's sync API,
+                        # which is bound to its creating greenlet.
+                        for state in self.session.run_all_native_events(
+                            timeout_sec=timeout
+                        ):
+                            _log(f"run_all_native: {state}")
+                            final = state
+                            yield {"progress": True, "state": state}
+                        yield {"status": "ok", "done": True, "final_state": final}
                     finally:
                         self._running_cell = None
                         self._running_started_at = None

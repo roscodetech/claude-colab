@@ -134,26 +134,70 @@ class ColabSession:
             # locator+filter handles that better than CSS :text-is.
             self.page.locator(selectors.RUNTIME_MENU_CLASS).filter(has_text="Runtime").first.click()
             self.page.click(selectors.RUNTIME_CHANGE)
-            # KNOWN GAP: dialog hardware-picker selectors are stale. Modern
-            # Colab uses Material 3 components; we haven't pinned the exact
-            # selector yet. See selectors.py + scripts/probe_runtime_dialog.py
-            # for the contributor handoff. For now, attempt the legacy
-            # selector — if it times out, we surface a clean error and Colab
-            # picks its default (usually CPU).
+
+            # Modern Colab dialog (probed 2026-05-08): hardware picker is a
+            # set of mwc-radio buttons inside a custom-element shadow DOM.
+            # The mwc-radios themselves have empty aria-label; the visible
+            # text "A100 GPU" / "CPU" / etc. lives on a sibling label. So we
+            # can't use a CSS attribute selector — get_by_label() walks the
+            # accessibility tree and pairs label text to the labelled element
+            # across shadow boundaries. Try a priority list of accelerator
+            # variants and click the first one Colab is offering this user.
+            priority = (
+                selectors.RUNTIME_HARDWARE_GPU_PRIORITY
+                if kind == "gpu"
+                else selectors.RUNTIME_HARDWARE_TPU_PRIORITY
+                if kind == "tpu"
+                else [selectors.RUNTIME_HARDWARE_CPU]
+            )
+            picked: str | None = None
             try:
-                sel = self.page.locator(selectors.RUNTIME_HARDWARE_SELECT)
-                sel.click(timeout=10_000)
-                label = {"gpu": "GPU", "tpu": "TPU"}.get(kind, "GPU")
-                self.page.click(f'mwc-list-item:has-text("{label}")')
-                self.page.click(selectors.RUNTIME_SAVE)
-                self.page.wait_for_timeout(500)
+                for label in priority:
+                    radio = self.page.get_by_label(label, exact=True)
+                    if radio.count() == 0:
+                        continue
+                    try:
+                        radio.first.click(timeout=2_500)
+                        picked = label
+                        break
+                    except Exception:
+                        # Radio exists but isn't clickable (disabled / off-quota);
+                        # try the next priority.
+                        continue
+                if picked is None:
+                    raise RuntimeError(
+                        f"no {kind!r} accelerator available — "
+                        f"none of {priority} resolved via get_by_label()"
+                    )
+                self.page.click(selectors.RUNTIME_SAVE, timeout=5_000)
+                # If there's an existing connected runtime, Colab pops a
+                # second "Discard current runtime?" warning dialog and the
+                # original Save click never lands. Confirm it explicitly.
+                self.page.wait_for_timeout(800)
+                warning = self.page.locator(
+                    'mwc-dialog.dismiss-runtime-warning[open]'
+                )
+                if warning.count():
+                    # Primary action button text varies by Colab build
+                    # ("Yes", "Discard", "Continue"). Try the primaryAction
+                    # slot first, then fall back to text.
+                    confirm = warning.locator(
+                        'md-text-button[slot="primaryAction"], '
+                        'md-text-button[dialogaction="ok"], '
+                        'button:has-text("Yes"), button:has-text("Discard")'
+                    ).first
+                    if confirm.count():
+                        confirm.click(timeout=3_000)
+                        self.page.wait_for_timeout(500)
             except Exception as e:
                 # Cancel the dialog so it doesn't sit blocking pointer events.
                 with contextlib.suppress(Exception):
-                    self.page.click('text="Cancel"', timeout=2_000)
+                    self.page.locator(
+                        'mwc-dialog.change-runtime-type md-text-button:has-text("Cancel")'
+                    ).first.click(timeout=2_000)
                 raise RuntimeError(
-                    f"Runtime-type dialog selectors are stale ({e}). "
-                    "GPU/TPU runtime change is currently broken; see selectors.py."
+                    f"Runtime-type dialog interaction failed ({e}). "
+                    "Run scripts/probe_runtime_dialog2.py to re-probe selectors."
                 ) from e
 
         # Click Connect; suppress if already connected (button gone).
@@ -175,8 +219,13 @@ class ColabSession:
         if self.page is None:
             return 0
         try:
-            n = self.page.evaluate(
-                "() => { const ds = document.querySelectorAll('mwc-dialog[open]');"
+            # Use Locator.evaluate rather than Page.evaluate: the latter is
+            # bound to the greenlet that created the page and raises
+            # `greenlet.error: Cannot switch to a different thread` if the
+            # daemon's connection-thread tries to drive it. Locator-rooted
+            # ops are thread-tolerant.
+            n = self.page.locator("body").evaluate(
+                "_ => { const ds = document.querySelectorAll('mwc-dialog[open]');"
                 " for (const d of ds) { d.removeAttribute('open'); d.style.display='none'; }"
                 " return ds.length; }"
             )
@@ -192,15 +241,16 @@ class ColabSession:
         notebook then NameError on names they expect to exist. Detect the
         prompt so callers can decide to accept-and-rerun upstream cells.
 
-        Best-effort DOM probe — never raises.
+        Best-effort DOM probe — never raises. Routed through a Locator to
+        stay tolerant of cross-thread calls (see dismiss_blocking_dialogs).
         """
         if self.page is None:
             return False
         try:
             return bool(
-                self.page.evaluate(
-                    "() => {"
-                    "  const txt = document.body && document.body.innerText || '';"
+                self.page.locator("body").evaluate(
+                    "el => {"
+                    "  const txt = el.innerText || '';"
                     "  return /Restart session/i.test(txt) || "
                     "         /You must restart the runtime/i.test(txt) || "
                     "         /WARNING: The following packages were previously imported/i.test(txt);"
@@ -300,40 +350,37 @@ class ColabSession:
             out.append(self.run_cell(cid, timeout_sec=timeout_sec))
         return out
 
-    def run_all_native(
+    def run_all_native_events(
         self,
         timeout_sec: int = 3600,
-        on_state: Any = None,
         accept_kernel_restart: bool = True,
-    ) -> dict[str, Any]:
-        """Trigger Colab's own "Run all" via Ctrl+F9 and poll for completion.
+    ):
+        """Generator: trigger Colab's Run All (Ctrl+F9), yield one state dict
+        per change, return on natural completion. Single-threaded — every
+        Playwright call happens in the caller's thread, which lets the daemon
+        relay events over TCP without spawning a worker thread (Playwright's
+        sync API is bound to the greenlet that created its objects).
 
-        Why this exists: per-cell run_cell() hovers the run button and
-        watches for a "running" class. That's brittle — modals block hovers,
-        Colab can silently restart the kernel mid-queue (after a pip install
-        that conflicts with imported packages), and cached `[ ]` indicators
-        make a never-executed cell look like a fast-completing one. Colab's
-        own Run All command bypasses every one of those failure modes: it
-        runs cells in declared order in a single kernel, handles the
-        restart-prompt natively, and only marks a cell `running` once it
-        actually starts.
-
-        on_state: optional callable receiving the latest state dict each time
-        it changes. Shape:
+        Yielded shape:
             {"running": int, "queued": int, "total": int,
              "kernel_restart_pending": bool, "kernel_restarted": bool}
 
         accept_kernel_restart: when True (default), click "Restart session"
         whenever Colab pops the prompt and re-issue Ctrl+F9 from the top.
-        When False, leave the prompt for the caller to handle.
+        Without this, downstream cells NameError on cleared kernel state
+        after a silent pip-install-triggered restart.
 
-        Returns the final state dict on success, raises on timeout.
+        Raises TimeoutError if the queue never drains within timeout_sec.
         """
         self.dismiss_blocking_dialogs()
-        # Focus the notebook so the shortcut hits Colab's own listener
-        # rather than the OS / browser.
-        self.page.click("body")
-        self.page.keyboard.press("Control+F9")
+        # Focus the notebook + send Ctrl+F9. Routing through Locator keeps
+        # us thread-tolerant: page.click / page.keyboard.press are bound to
+        # the greenlet that created the Page object, but Locator-rooted ops
+        # work cross-thread (which the daemon needs since each command runs
+        # on a per-connection thread).
+        body = self.page.locator("body")
+        body.click()
+        body.press("Control+F9")
 
         deadline = time.time() + timeout_sec
         last_state: dict[str, Any] | None = None
@@ -354,13 +401,13 @@ class ColabSession:
             ):
                 kernel_restarted_once = True
                 self.page.wait_for_timeout(2_000)
-                self.page.click("body")
-                self.page.keyboard.press("Control+F9")
+                body.click()
+                body.press("Control+F9")
                 first_seen_running = False
                 last_state = None
                 continue
-            state = self.page.evaluate(
-                "() => ({"
+            state = body.evaluate(
+                "_ => ({"
                 "  running: document.querySelectorAll('.cell.code.running').length,"
                 "  queued: document.querySelectorAll('.cell.code.pending,.cell.code.queued').length,"
                 "  total: document.querySelectorAll('.cell.code').length,"
@@ -369,15 +416,32 @@ class ColabSession:
             state["kernel_restart_pending"] = restart_pending
             state["kernel_restarted"] = kernel_restarted_once
             if state != last_state:
-                if on_state is not None:
-                    with contextlib.suppress(Exception):
-                        on_state(state)
+                yield state
                 last_state = state
             if state["running"] > 0:
                 first_seen_running = True
             elif first_seen_running and state["queued"] == 0:
-                return state
+                return
         raise TimeoutError(f"run_all_native timed out after {timeout_sec}s")
+
+    def run_all_native(
+        self,
+        timeout_sec: int = 3600,
+        on_state: Any = None,
+        accept_kernel_restart: bool = True,
+    ) -> dict[str, Any] | None:
+        """Synchronous wrapper around run_all_native_events: drains the
+        generator and returns the final state dict. on_state, if given, is
+        invoked with each state change."""
+        final: dict[str, Any] | None = None
+        for state in self.run_all_native_events(
+            timeout_sec=timeout_sec, accept_kernel_restart=accept_kernel_restart
+        ):
+            final = state
+            if on_state is not None:
+                with contextlib.suppress(Exception):
+                    on_state(state)
+        return final
 
     # ---------- Output capture ----------
 

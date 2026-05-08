@@ -23,12 +23,11 @@ from typing import Any
 from . import paths as _paths
 
 CONNECT_TIMEOUT_SEC = 5
-# Per-recv timeout. The daemon writes a heartbeat / progress line on every
-# state change for streaming commands (run_all_native), and run_cell finishes
-# in one shot — neither sits silent for >~10 min in practice. Bump well past
-# that so a quiet stretch in the middle of a 30-min training cell doesn't
-# trip recv().
-COMMAND_TIMEOUT_SEC = 1800
+# Per-recv timeout. run_all_native blocks the connection for the entire Run
+# All (no streaming yet — see session_daemon.STREAM_COMMANDS for why); this
+# has to absorb the longest notebook the user expects to run end-to-end.
+# 4h covers a typical fine-tune. Bump if you need longer.
+COMMAND_TIMEOUT_SEC = 14400
 
 
 @dataclass
