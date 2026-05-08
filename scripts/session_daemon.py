@@ -23,6 +23,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 # Allow `python -m scripts.session_daemon ...` and direct invocation.
 if __package__ is None or __package__ == "":
@@ -98,23 +99,13 @@ class Daemon:
     # ---------- Command dispatch ----------
 
     def _dismiss_blocking_dialogs(self) -> int:
-        """Force-close any open mwc-dialog. Colab pops these for runtime errors
-        and for "notebook modified externally" warnings, and they intercept
-        pointer events on every cell. Returns the count dismissed."""
-        if self.session is None or self.session.page is None:
+        """Delegate to ColabSession; log when we actually clear something."""
+        if self.session is None:
             return 0
-        try:
-            n = self.session.page.evaluate(
-                "() => { const ds = document.querySelectorAll('mwc-dialog[open]');"
-                " for (const d of ds) { d.removeAttribute('open'); d.style.display='none'; }"
-                " return ds.length; }"
-            )
-            if n:
-                _log(f"dismissed {n} mwc-dialog(s)")
-            return int(n)
-        except Exception as e:
-            _log(f"dismiss_dialogs failed: {e}")
-            return 0
+        n = self.session.dismiss_blocking_dialogs()
+        if n:
+            _log(f"dismissed {n} mwc-dialog(s)")
+        return n
 
     def _running_state(self) -> dict | None:
         """Snapshot of the in-progress cell, if any. Used by ping responses."""
@@ -165,39 +156,13 @@ class Daemon:
                         self._running_started_at = None
                 return {"status": "ok", "results": [r.to_dict() for r in results]}
             if cmd == "run_all_native":
-                # Trigger Colab's own "Run all" via keyboard shortcut (Ctrl+F9).
-                # Colab then handles cell ordering, kernel-restart prompts, and
-                # cached-output invalidation natively. Poll for completion by
-                # watching the count of running/queued cells.
-                page = self.session.page
-                self._dismiss_blocking_dialogs()
-                # Focus the notebook so the shortcut hits Colab's own listener
-                # rather than the OS / browser.
-                page.click("body")
-                page.keyboard.press("Control+F9")
-                deadline = time.time() + int(payload.get("timeout_sec", 3600))
-                last_state = None
-                first_seen_running = False
-                while time.time() < deadline:
-                    time.sleep(2.0)
-                    self._dismiss_blocking_dialogs()
-                    state = page.evaluate(
-                        "() => ({"
-                        "  running: document.querySelectorAll('.cell.code.running').length,"
-                        "  queued: document.querySelectorAll('.cell.code.pending,.cell.code.queued').length,"
-                        "  total: document.querySelectorAll('.cell.code').length,"
-                        "})"
-                    )
-                    if state != last_state:
-                        _log(f"run_all_native: {state}")
-                        last_state = state
-                    if state["running"] > 0:
-                        first_seen_running = True
-                    elif first_seen_running and state["queued"] == 0:
-                        break
-                else:
-                    return {"status": "error", "error": "run_all_native timed out"}
-                return {"status": "ok", "final_state": state}
+                # Streaming command — handled by handle_stream(); this branch
+                # should never be reached because _serve_one routes
+                # run_all_native through handle_stream first.
+                return {
+                    "status": "error",
+                    "error": "run_all_native is a streaming command; use send_stream",
+                }
             if cmd == "quit":
                 self._stop.set()
                 return {"status": "ok", "shutting_down": True}
@@ -241,6 +206,84 @@ class Daemon:
         srv.close()
         _log("daemon stopped serving")
 
+    # ---------- Streaming commands ----------
+
+    # Commands listed here use a generator response — one JSON line per state
+    # change, terminated by a `done: true` line. _serve_one routes them
+    # through handle_stream instead of handle.
+    STREAM_COMMANDS = ("run_all_native",)
+
+    def handle_stream(self, payload: dict):
+        """Generator yielding one response dict per progress step.
+
+        First line typically `{"status": "started", "progress": true, ...}`.
+        Intermediate lines `{"progress": true, "state": ...}`. Terminal line
+        `{"status": "ok"|"error", "done": true, ...}`. Errors raised inside
+        are caught and emitted as a final terminal line so the client always
+        sees a clean shutdown.
+        """
+        cmd = payload.get("cmd")
+        try:
+            if cmd == "run_all_native":
+                timeout = int(payload.get("timeout_sec", 3600))
+                yield {"status": "started", "progress": True, "command": cmd}
+                with self._session_lock:
+                    self._running_cell = "<all>"
+                    self._running_started_at = time.time()
+                    last: dict | None = None
+
+                    def _on_state(state):
+                        nonlocal last
+                        last = state
+                        _log(f"run_all_native: {state}")
+
+                    try:
+                        # Stream each state change to the client by yielding from
+                        # the polling loop below; ColabSession.run_all_native
+                        # invokes _on_state every time .running/.queued change.
+                        # We can't yield from inside Playwright's loop, so we
+                        # spawn it in a thread and drain a queue.
+                        import queue as _queue
+
+                        q: _queue.Queue = _queue.Queue()
+                        result_holder: dict[str, Any] = {}
+
+                        def _runner():
+                            try:
+                                final = self.session.run_all_native(
+                                    timeout_sec=timeout,
+                                    on_state=lambda s: q.put(("progress", s)),
+                                )
+                                q.put(("done", final))
+                            except Exception as e:
+                                q.put(("error", str(e)))
+
+                        t = threading.Thread(target=_runner, daemon=True)
+                        t.start()
+                        while True:
+                            kind, payload_ = q.get()
+                            if kind == "progress":
+                                yield {"progress": True, "state": payload_}
+                            elif kind == "done":
+                                result_holder["final"] = payload_
+                                break
+                            elif kind == "error":
+                                yield {"status": "error", "done": True, "error": payload_}
+                                return
+                        yield {
+                            "status": "ok",
+                            "done": True,
+                            "final_state": result_holder["final"],
+                        }
+                    finally:
+                        self._running_cell = None
+                        self._running_started_at = None
+                return
+            yield {"status": "error", "done": True, "error": f"not a streaming command: {cmd!r}"}
+        except Exception as e:
+            _log(f"stream handler error on {cmd}: {e}\n{traceback.format_exc()}")
+            yield {"status": "error", "done": True, "error": str(e)}
+
     def _serve_one(self, conn) -> None:
         with conn:
             try:
@@ -254,13 +297,28 @@ class Daemon:
                 if not data:
                     return
                 payload = json.loads(data.decode("utf-8").rstrip("\n"))
-                response = self.handle(payload)
-                conn.sendall((json.dumps(response, default=str) + "\n").encode("utf-8"))
+                cmd = payload.get("cmd")
+                # Streaming commands write one JSON line per state change
+                # (heartbeat-style) and a terminal line. Single-shot commands
+                # write exactly one line. Either way we never close the
+                # connection until the handler is done.
+                if cmd in self.STREAM_COMMANDS:
+                    # Disable per-recv timeout while we sit in the producer
+                    # loop — between events the connection is intentionally
+                    # idle on the wire (we only write).
+                    conn.settimeout(None)
+                    for line in self.handle_stream(payload):
+                        conn.sendall((json.dumps(line, default=str) + "\n").encode("utf-8"))
+                else:
+                    response = self.handle(payload)
+                    conn.sendall((json.dumps(response, default=str) + "\n").encode("utf-8"))
             except Exception as e:
                 _log(f"connection error: {e}\n{traceback.format_exc()}")
                 with contextlib.suppress(OSError):
                     conn.sendall(
-                        (json.dumps({"status": "error", "error": str(e)}) + "\n").encode("utf-8")
+                        (
+                            json.dumps({"status": "error", "done": True, "error": str(e)}) + "\n"
+                        ).encode("utf-8")
                     )
 
     def heartbeat_loop(self) -> None:

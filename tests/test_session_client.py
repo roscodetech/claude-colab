@@ -148,3 +148,80 @@ def test_send_passes_kwargs_as_payload():
     session_client.send("run_cell", cell_id="abc", timeout_sec=42)
     assert received == {"cmd": "run_cell", "cell_id": "abc", "timeout_sec": 42}
     t.join(timeout=5)
+
+
+def _fake_streaming_daemon(port_holder: list[int], lines: list[dict]) -> None:
+    """Tiny socket server that mimics a streaming daemon: writes multiple
+    JSON-line responses for one request, then closes."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port_holder.append(srv.getsockname()[1])
+    srv.settimeout(5)
+    try:
+        conn, _ = srv.accept()
+        with conn:
+            data = bytearray()
+            while not data.endswith(b"\n"):
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data.extend(chunk)
+            for line in lines:
+                conn.sendall((json.dumps(line) + "\n").encode("utf-8"))
+    finally:
+        srv.close()
+
+
+def test_send_stream_yields_each_line():
+    """send_stream surfaces every JSON line — progress + terminal."""
+    port_holder: list[int] = []
+    lines = [
+        {"status": "started", "progress": True, "command": "run_all_native"},
+        {"progress": True, "state": {"running": 1, "queued": 5, "total": 6}},
+        {"progress": True, "state": {"running": 1, "queued": 2, "total": 6}},
+        {"status": "ok", "done": True, "final_state": {"running": 0, "queued": 0, "total": 6}},
+    ]
+    t = threading.Thread(target=_fake_streaming_daemon, args=(port_holder, lines))
+    t.start()
+    while not port_holder:
+        pass
+    _write_session_file(port=port_holder[0])
+
+    received = list(session_client.send_stream("run_all_native"))
+    assert received == lines
+    t.join(timeout=5)
+
+
+def test_send_collapses_streaming_to_terminal_line():
+    """Plain send() drops progress lines and returns only the terminal one."""
+    port_holder: list[int] = []
+    lines = [
+        {"status": "started", "progress": True, "command": "run_all_native"},
+        {"progress": True, "state": {"running": 1, "queued": 5, "total": 6}},
+        {"status": "ok", "done": True, "final_state": {"running": 0, "queued": 0, "total": 6}},
+    ]
+    t = threading.Thread(target=_fake_streaming_daemon, args=(port_holder, lines))
+    t.start()
+    while not port_holder:
+        pass
+    _write_session_file(port=port_holder[0])
+
+    res = session_client.send("run_all_native")
+    assert res == lines[-1]
+    t.join(timeout=5)
+
+
+def test_send_returns_first_terminal_for_single_shot():
+    """Backward compatibility: single-line responses (run_cell etc.) still work."""
+    port_holder: list[int] = []
+    lines = [{"status": "ok", "result": {"cell_id": "abc", "status": "ok"}}]
+    t = threading.Thread(target=_fake_streaming_daemon, args=(port_holder, lines))
+    t.start()
+    while not port_holder:
+        pass
+    _write_session_file(port=port_holder[0])
+
+    res = session_client.send("run_cell", cell_id="abc")
+    assert res == lines[0]
+    t.join(timeout=5)

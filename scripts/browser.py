@@ -162,6 +162,74 @@ class ColabSession:
         # Brief settle so the click registers before run_cell starts.
         self.page.wait_for_timeout(2_000)
 
+    # ---------- Modal dialogs & runtime state ----------
+
+    def dismiss_blocking_dialogs(self) -> int:
+        """Force-close any open mwc-dialog. Colab pops these for runtime errors,
+        "notebook modified externally" warnings, and "restart session?" prompts;
+        each one intercepts pointer events on every cell — every subsequent
+        hover then dies at the 30s Playwright default with no useful diagnostic.
+
+        Returns the count dismissed. Best-effort — never raises.
+        """
+        if self.page is None:
+            return 0
+        try:
+            n = self.page.evaluate(
+                "() => { const ds = document.querySelectorAll('mwc-dialog[open]');"
+                " for (const d of ds) { d.removeAttribute('open'); d.style.display='none'; }"
+                " return ds.length; }"
+            )
+            return int(n)
+        except Exception:
+            return 0
+
+    def kernel_restart_pending(self) -> bool:
+        """True when Colab is showing the post-pip-install "Restart session?"
+        prompt. Colab silently restarts the kernel after some pip installs
+        (e.g. when the new package conflicts with an already-imported module),
+        which clears every variable defined upstream — cells further down the
+        notebook then NameError on names they expect to exist. Detect the
+        prompt so callers can decide to accept-and-rerun upstream cells.
+
+        Best-effort DOM probe — never raises.
+        """
+        if self.page is None:
+            return False
+        try:
+            return bool(
+                self.page.evaluate(
+                    "() => {"
+                    "  const txt = document.body && document.body.innerText || '';"
+                    "  return /Restart session/i.test(txt) || "
+                    "         /You must restart the runtime/i.test(txt) || "
+                    "         /WARNING: The following packages were previously imported/i.test(txt);"
+                    "}"
+                )
+            )
+        except Exception:
+            return False
+
+    def accept_kernel_restart(self) -> bool:
+        """Click Colab's "Restart session" button if visible. Returns True
+        if a button was clicked. Use after `kernel_restart_pending()` returns
+        True to commit the restart (and lose kernel state) rather than
+        leaving the prompt blocking other cells."""
+        if self.page is None:
+            return False
+        try:
+            # Buttons in the prompt vary by Colab version; try the common
+            # labels in priority order.
+            for label in ("Restart session", "Restart runtime", "RESTART SESSION"):
+                btn = self.page.locator(f'button:has-text("{label}")').first
+                if btn.count():
+                    btn.click(timeout=5_000)
+                    self.page.wait_for_timeout(1_500)
+                    return True
+        except Exception:
+            pass
+        return False
+
     # ---------- Cell execution ----------
 
     def _cell_locator(self, cell_id: str):
@@ -172,6 +240,9 @@ class ColabSession:
         return "running" in classes or cell.locator("[busy]").count() > 0
 
     def run_cell(self, cell_id: str, timeout_sec: int = DEFAULT_RUN_TIMEOUT) -> RunResult:
+        # Modals would block hover/click silently for 30s — clear them first.
+        self.dismiss_blocking_dialogs()
+
         cell = self._cell_locator(cell_id)
         cell.scroll_into_view_if_needed()
         # Hover, then click run. Colab's run button is a slot inside the cell.
@@ -228,6 +299,85 @@ class ColabSession:
         for cid in ids:
             out.append(self.run_cell(cid, timeout_sec=timeout_sec))
         return out
+
+    def run_all_native(
+        self,
+        timeout_sec: int = 3600,
+        on_state: Any = None,
+        accept_kernel_restart: bool = True,
+    ) -> dict[str, Any]:
+        """Trigger Colab's own "Run all" via Ctrl+F9 and poll for completion.
+
+        Why this exists: per-cell run_cell() hovers the run button and
+        watches for a "running" class. That's brittle — modals block hovers,
+        Colab can silently restart the kernel mid-queue (after a pip install
+        that conflicts with imported packages), and cached `[ ]` indicators
+        make a never-executed cell look like a fast-completing one. Colab's
+        own Run All command bypasses every one of those failure modes: it
+        runs cells in declared order in a single kernel, handles the
+        restart-prompt natively, and only marks a cell `running` once it
+        actually starts.
+
+        on_state: optional callable receiving the latest state dict each time
+        it changes. Shape:
+            {"running": int, "queued": int, "total": int,
+             "kernel_restart_pending": bool, "kernel_restarted": bool}
+
+        accept_kernel_restart: when True (default), click "Restart session"
+        whenever Colab pops the prompt and re-issue Ctrl+F9 from the top.
+        When False, leave the prompt for the caller to handle.
+
+        Returns the final state dict on success, raises on timeout.
+        """
+        self.dismiss_blocking_dialogs()
+        # Focus the notebook so the shortcut hits Colab's own listener
+        # rather than the OS / browser.
+        self.page.click("body")
+        self.page.keyboard.press("Control+F9")
+
+        deadline = time.time() + timeout_sec
+        last_state: dict[str, Any] | None = None
+        first_seen_running = False
+        kernel_restarted_once = False
+
+        while time.time() < deadline:
+            time.sleep(2.0)
+            self.dismiss_blocking_dialogs()
+            restart_pending = self.kernel_restart_pending()
+            # Accept once and re-issue Run All from the top so cells
+            # downstream don't NameError on cleared state.
+            if (
+                restart_pending
+                and accept_kernel_restart
+                and not kernel_restarted_once
+                and self.accept_kernel_restart()
+            ):
+                kernel_restarted_once = True
+                self.page.wait_for_timeout(2_000)
+                self.page.click("body")
+                self.page.keyboard.press("Control+F9")
+                first_seen_running = False
+                last_state = None
+                continue
+            state = self.page.evaluate(
+                "() => ({"
+                "  running: document.querySelectorAll('.cell.code.running').length,"
+                "  queued: document.querySelectorAll('.cell.code.pending,.cell.code.queued').length,"
+                "  total: document.querySelectorAll('.cell.code').length,"
+                "})"
+            )
+            state["kernel_restart_pending"] = restart_pending
+            state["kernel_restarted"] = kernel_restarted_once
+            if state != last_state:
+                if on_state is not None:
+                    with contextlib.suppress(Exception):
+                        on_state(state)
+                last_state = state
+            if state["running"] > 0:
+                first_seen_running = True
+            elif first_seen_running and state["queued"] == 0:
+                return state
+        raise TimeoutError(f"run_all_native timed out after {timeout_sec}s")
 
     # ---------- Output capture ----------
 
@@ -382,6 +532,18 @@ def run_all_cells(file_id: str, runtime: str | None = None) -> list[dict[str, An
     with acquire_lock(), ColabSession(file_id, runtime=runtime) as sess:
         sess.connect_runtime(runtime)
         return [r.to_dict() for r in sess.run_all()]
+
+
+def run_all_native(
+    file_id: str, runtime: str | None = None, timeout_sec: int = 3600
+) -> dict[str, Any]:
+    """Ephemeral wrapper around ColabSession.run_all_native — drives Colab's
+    own Run All (Ctrl+F9) end-to-end, then closes the browser. Use when you
+    need a single fire-and-forget run; use the persistent session daemon for
+    iterative work where you want to inspect outputs between cells."""
+    with acquire_lock(), ColabSession(file_id, runtime=runtime) as sess:
+        sess.connect_runtime(runtime)
+        return sess.run_all_native(timeout_sec=timeout_sec)
 
 
 def open_only(file_id: str) -> dict[str, Any]:

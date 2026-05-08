@@ -265,10 +265,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     """Run a cell or all cells. Uses the active session if it matches the
     requested file_id; otherwise falls back to ephemeral run (browser
     spin-up + tear-down per call — no shared kernel state).
+
+    With --native --all, drives Colab's own Run All (Ctrl+F9) instead of
+    iterating run buttons one by one. Prefer this for end-to-end notebook
+    runs: Colab handles cell ordering, kernel-restart prompts, and modal
+    dialogs in a single kernel — none of which the per-cell hover loop
+    survives reliably.
     """
     want_all = args.cell == "all" or (args.cell is None and args.all)
     if not want_all and args.cell is None:
         return _fail("provide --cell <id> or --all", human=args.human)
+    if args.native and not want_all:
+        return _fail("--native requires --all", human=args.human)
 
     sess = session_client.get_active_session()
 
@@ -284,6 +292,38 @@ def cmd_run(args: argparse.Namespace) -> int:
     if sess is not None:
         # Use the persistent session — fast, kernel state preserved.
         try:
+            if args.native:
+                # Streaming command — print progress events to stderr in human
+                # mode so the user can see the queue draining live.
+                final = None
+                for line in session_client.send_stream(
+                    "run_all_native", info=sess, timeout_sec=args.timeout
+                ):
+                    if line.get("progress") and args.human:
+                        st = line.get("state") or {}
+                        if st:
+                            print(
+                                f"  running={st.get('running')} "
+                                f"queued={st.get('queued')} "
+                                f"total={st.get('total')}",
+                                file=sys.stderr,
+                            )
+                    if line.get("done"):
+                        final = line
+                if final is None or final.get("status") != "ok":
+                    return _fail(
+                        f"run_all_native failed: {final.get('error') if final else 'no response'}",
+                        human=args.human,
+                    )
+                return _emit(
+                    {
+                        "status": "ok",
+                        "via": "session",
+                        "mode": "native",
+                        "final_state": final.get("final_state"),
+                    },
+                    args.human,
+                )
             if want_all:
                 res = session_client.send("run_all", info=sess)
                 return _emit(
@@ -301,6 +341,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Ephemeral fallback. Warn — for iterative work the user almost always
     # wants /colab-open instead.
+    if args.native:
+        final_state = browser.run_all_native(
+            args.file_id, runtime=args.runtime, timeout_sec=args.timeout
+        )
+        return _emit(
+            {
+                "status": "ok",
+                "via": "ephemeral",
+                "mode": "native",
+                "final_state": final_state,
+            },
+            args.human,
+        )
     if want_all:
         results = browser.run_all_cells(args.file_id, runtime=args.runtime)
         return _emit({"status": "ok", "via": "ephemeral", "results": results}, args.human)
@@ -486,8 +539,20 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("file_id")
     sp.add_argument("--cell", help="cell id, or 'all'")
     sp.add_argument("--all", action="store_true")
+    sp.add_argument(
+        "--native",
+        action="store_true",
+        help="with --all, drive Colab's own Run All (Ctrl+F9) instead of "
+        "hovering each run button — required for notebooks with kernel-"
+        "restart-after-pip-install or runtime-error modals",
+    )
     sp.add_argument("--runtime", choices=["cpu", "gpu", "tpu"])
-    sp.add_argument("--timeout", type=int, default=600)
+    sp.add_argument(
+        "--timeout",
+        type=int,
+        default=600,
+        help="per-cell timeout (default mode) or whole-notebook timeout (--native)",
+    )
     sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("output", parents=[shared])
