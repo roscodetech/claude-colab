@@ -252,9 +252,7 @@ class Daemon:
                         # the Playwright calls and yields events. Spawning a
                         # worker thread here breaks Playwright's sync API,
                         # which is bound to its creating greenlet.
-                        for state in self.session.run_all_native_events(
-                            timeout_sec=timeout
-                        ):
+                        for state in self.session.run_all_native_events(timeout_sec=timeout):
                             _log(f"run_all_native: {state}")
                             final = state
                             yield {"progress": True, "state": state}

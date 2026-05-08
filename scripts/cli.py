@@ -297,9 +297,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 # connection for the duration of run_all_native and replies
                 # with the final state. session_client.COMMAND_TIMEOUT_SEC
                 # absorbs long training notebooks.
-                res = session_client.send(
-                    "run_all_native", info=sess, timeout_sec=args.timeout
-                )
+                res = session_client.send("run_all_native", info=sess, timeout_sec=args.timeout)
                 if res.get("status") != "ok":
                     return _fail(
                         f"run_all_native failed: {res.get('error', '?')}",
@@ -317,9 +315,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             if want_all:
                 res = session_client.send("run_all", info=sess)
                 if res.get("status") != "ok":
-                    return _fail(
-                        f"run_all failed: {res.get('error', '?')}", human=args.human
-                    )
+                    return _fail(f"run_all failed: {res.get('error', '?')}", human=args.human)
                 return _emit(
                     {"status": "ok", "via": "session", "results": res.get("results", [])},
                     args.human,
@@ -330,9 +326,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             if res.get("status") != "ok":
                 # Surface the daemon's actual error rather than emitting a
                 # misleading status: ok with result: null.
-                return _fail(
-                    f"run_cell failed: {res.get('error', '?')}", human=args.human
-                )
+                return _fail(f"run_cell failed: {res.get('error', '?')}", human=args.human)
             return _emit(
                 {"status": "ok", "via": "session", "result": res.get("result")}, args.human
             )

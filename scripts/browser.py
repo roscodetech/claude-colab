@@ -141,15 +141,13 @@ class ColabSession:
         clicked_disconnect = False
         confirmed = False
         try:
-            page.locator(selectors.RUNTIME_MENU_CLASS).filter(
-                has_text="Runtime"
-            ).first.click(timeout=2_500)
+            page.locator(selectors.RUNTIME_MENU_CLASS).filter(has_text="Runtime").first.click(
+                timeout=2_500
+            )
             clicked_menu = True
             # Menu item is only present when a runtime is attached. If not,
             # locator times out at 2 s and we exit cleanly via the except.
-            page.locator('text="Disconnect and delete runtime"').first.click(
-                timeout=2_000
-            )
+            page.locator('text="Disconnect and delete runtime"').first.click(timeout=2_000)
             clicked_disconnect = True
             # Confirmation dialog: "Are you sure you want to disconnect..."
             page.locator(
@@ -176,9 +174,7 @@ class ColabSession:
         teardowns are observable from the same surface as run-time logs."""
         from .paths import SESSION_LOG_PATH
 
-        with contextlib.suppress(Exception), SESSION_LOG_PATH.open(
-            "a", encoding="utf-8"
-        ) as f:
+        with contextlib.suppress(Exception), SESSION_LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
 
     # ---------- Runtime liveness probe ----------
@@ -198,9 +194,12 @@ class ColabSession:
         if self.page is None:
             return None
         try:
-            label = self.page.locator(selectors.CONNECT_BUTTON).first.get_attribute(
-                "aria-label", timeout=2_000
-            ) or ""
+            label = (
+                self.page.locator(selectors.CONNECT_BUTTON).first.get_attribute(
+                    "aria-label", timeout=2_000
+                )
+                or ""
+            )
         except Exception:
             return None
         low = label.lower()
@@ -307,9 +306,7 @@ class ColabSession:
                 # second "Discard current runtime?" warning dialog and the
                 # original Save click never lands. Confirm it explicitly.
                 self.page.wait_for_timeout(800)
-                warning = self.page.locator(
-                    'mwc-dialog.dismiss-runtime-warning[open]'
-                )
+                warning = self.page.locator("mwc-dialog.dismiss-runtime-warning[open]")
                 if warning.count():
                     # Primary action button text varies by Colab build
                     # ("Yes", "Discard", "Continue"). Try the primaryAction

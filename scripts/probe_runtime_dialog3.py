@@ -44,8 +44,8 @@ def main() -> None:
                 "mwc-radio",
                 'mwc-radio[aria-label="A100 GPU"]',
                 'mwc-radio[aria-label*="GPU"]',
-                'colab-runtime-attributes-selector mwc-radio',
-                'colab-runtime-attributes-selector >> mwc-radio',
+                "colab-runtime-attributes-selector mwc-radio",
+                "colab-runtime-attributes-selector >> mwc-radio",
             ]
             results = {}
             for s in try_selectors:
