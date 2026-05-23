@@ -293,26 +293,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         # Use the persistent session — fast, kernel state preserved.
         try:
             if args.native:
-                # Streaming command — print progress events to stderr in human
-                # mode so the user can see the queue draining live.
-                final = None
-                for line in session_client.send_stream(
-                    "run_all_native", info=sess, timeout_sec=args.timeout
-                ):
-                    if line.get("progress") and args.human:
-                        st = line.get("state") or {}
-                        if st:
-                            print(
-                                f"  running={st.get('running')} "
-                                f"queued={st.get('queued')} "
-                                f"total={st.get('total')}",
-                                file=sys.stderr,
-                            )
-                    if line.get("done"):
-                        final = line
-                if final is None or final.get("status") != "ok":
+                # Synchronous in the session — the daemon blocks the
+                # connection for the duration of run_all_native and replies
+                # with the final state. session_client.COMMAND_TIMEOUT_SEC
+                # absorbs long training notebooks.
+                res = session_client.send("run_all_native", info=sess, timeout_sec=args.timeout)
+                if res.get("status") != "ok":
                     return _fail(
-                        f"run_all_native failed: {final.get('error') if final else 'no response'}",
+                        f"run_all_native failed: {res.get('error', '?')}",
                         human=args.human,
                     )
                 return _emit(
@@ -320,12 +308,14 @@ def cmd_run(args: argparse.Namespace) -> int:
                         "status": "ok",
                         "via": "session",
                         "mode": "native",
-                        "final_state": final.get("final_state"),
+                        "final_state": res.get("final_state"),
                     },
                     args.human,
                 )
             if want_all:
                 res = session_client.send("run_all", info=sess)
+                if res.get("status") != "ok":
+                    return _fail(f"run_all failed: {res.get('error', '?')}", human=args.human)
                 return _emit(
                     {"status": "ok", "via": "session", "results": res.get("results", [])},
                     args.human,
@@ -333,6 +323,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             res = session_client.send(
                 "run_cell", info=sess, cell_id=args.cell, timeout_sec=args.timeout
             )
+            if res.get("status") != "ok":
+                # Surface the daemon's actual error rather than emitting a
+                # misleading status: ok with result: null.
+                return _fail(f"run_cell failed: {res.get('error', '?')}", human=args.human)
             return _emit(
                 {"status": "ok", "via": "session", "result": res.get("result")}, args.human
             )
