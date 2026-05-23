@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "claude-colab-marketplace",
+  "version": "1.0.0",
+  "description": "ROSCODE TECH — claude-colab plugin marketplace.",
+  "owner": {
+    "name": "Roscoe Kerby",
+    "email": "roscoe@roscodetech.com",
+    "url": "https://roscodetech.com"
+  },
+  "metadata": {
+    "description": "Drive Google Colab from Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "claude-colab",
+      "source": "./",
+      "description": "Drive Google Colab from Claude Code — CRUD notebooks via Drive API, run cells via headed Chrome, capture text and image output. Includes planner/executor/debugger subagents.",
+      "category": "automation"
+    }
+  ]
+}
