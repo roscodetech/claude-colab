@@ -24,6 +24,9 @@ DEFAULTS: dict[str, Any] = {
     "browser_profile_dir": "~/.claude-colab/chrome-profile",
     "default_runtime": "cpu",
     "headed": True,
+    # Cap on concurrent plugin-spawned runtimes. Pro+ allows ~3; default 2 leaves
+    # one slot of headroom for manual Colab work. See scripts/ledger.py.
+    "runtime_cap": 2,
 }
 
 

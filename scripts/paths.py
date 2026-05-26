@@ -24,6 +24,10 @@ LOG_PATH = HOME / "claude-colab.log"
 # shutdown. Stale presence (daemon crashed) is detected via PID liveness.
 SESSION_PATH = HOME / "session.json"
 SESSION_LOG_PATH = HOME / "session.log"
+# Local ledger of runtimes the plugin has spawned. Used to enforce a configurable
+# cap below Pro+'s ~3-concurrent-session limit so rapid /colab-open cycles can't
+# starve the account by leaving 12-24 h zombie runtimes holding every slot.
+LEDGER_PATH = HOME / "active_runtimes.json"
 
 # Plugin root is two levels up from this file (scripts/paths.py → claude-colab/)
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent

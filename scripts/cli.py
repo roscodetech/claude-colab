@@ -21,9 +21,9 @@ from typing import Any
 # Allow direct invocation (`python scripts/cli.py`) and module invocation.
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from scripts import auth, browser, config, drive, notebook, paths, session_client
+    from scripts import auth, browser, config, drive, ledger, notebook, paths, session_client
 else:
-    from . import auth, browser, config, drive, notebook, paths, session_client
+    from . import auth, browser, config, drive, ledger, notebook, paths, session_client
 
 
 # ---------- helpers ----------
@@ -74,6 +74,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         patches["debugger_max_retries"] = args.retries
     if args.runtime is not None:
         patches["default_runtime"] = args.runtime
+    if args.runtime_cap is not None:
+        patches["runtime_cap"] = args.runtime_cap
 
     if patches:
         cfg = config.update(**patches)
@@ -182,7 +184,14 @@ def cmd_open(args: argparse.Namespace) -> int:
             human=args.human,
         )
 
-    runtime = args.runtime or config.load().get("default_runtime", "cpu")
+    cfg = config.load()
+    runtime = args.runtime or cfg.get("default_runtime", "cpu")
+
+    # Preflight: refuse if we're already at the plugin's concurrent-runtime cap.
+    pre = ledger.preflight(cap=cfg.get("runtime_cap", 2))
+    if pre["status"] == "rate_limited":
+        return _fail(pre["hint"], human=args.human, **{k: v for k, v in pre.items() if k != "hint"})
+
     pid = _spawn_session_daemon(args.file_id, runtime)
     info = session_client.wait_until_ready(timeout_sec=args.timeout)
     if info is None:
@@ -193,6 +202,8 @@ def cmd_open(args: argparse.Namespace) -> int:
             f"see {paths.SESSION_LOG_PATH} for details",
             human=args.human,
         )
+
+    ledger.add(args.file_id, runtime_type=runtime, pid=info.pid)
 
     return _emit(
         {
@@ -212,6 +223,9 @@ def cmd_close(args: argparse.Namespace) -> int:
     """Tell the active session daemon to exit cleanly."""
     info = session_client.get_active_session()
     if info is None:
+        # Still sweep the ledger — caller may have an orphaned entry from a
+        # session that crashed without going through this path.
+        ledger.sweep()
         return _emit({"status": "ok", "note": "no active session"}, args.human)
 
     try:
@@ -221,18 +235,36 @@ def cmd_close(args: argparse.Namespace) -> int:
         _kill_pid(info.pid)
         with __import__("contextlib").suppress(OSError):
             paths.SESSION_PATH.unlink()
+        ledger.remove(info.file_id)
         return _emit(
             {"status": "ok", "note": f"daemon unreachable, force-killed pid {info.pid}: {e}"},
             args.human,
         )
+    ledger.remove(info.file_id)
     return _emit({"status": "ok", "response": res}, args.human)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
     """Report on the active session, if any."""
+    cfg = config.load()
+    cap = cfg.get("runtime_cap", 2)
+    # Sweep stale ledger entries first so the reported count is meaningful.
+    active_runtimes = ledger.sweep()
+
     info = session_client.get_active_session()
     if info is None:
-        return _emit({"status": "ok", "active": False}, args.human)
+        return _emit(
+            {
+                "status": "ok",
+                "active": False,
+                "ledger": {
+                    "active_runtimes": active_runtimes,
+                    "count": len(active_runtimes),
+                    "cap": cap,
+                },
+            },
+            args.human,
+        )
 
     # Verify the daemon is responsive, not just alive.
     # Use a richer ping that also surfaces in-flight cell progress.
@@ -254,6 +286,11 @@ def cmd_status(args: argparse.Namespace) -> int:
             "file_id": info.file_id,
             "runtime": info.runtime,
             "uptime_sec": int(time.time() - info.started_at),
+        },
+        "ledger": {
+            "active_runtimes": active_runtimes,
+            "count": len(active_runtimes),
+            "cap": cap,
         },
     }
     if running:
@@ -335,6 +372,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Ephemeral fallback. Warn — for iterative work the user almost always
     # wants /colab-open instead.
+    cfg = config.load()
+    pre = ledger.preflight(cap=cfg.get("runtime_cap", 2))
+    if pre["status"] == "rate_limited":
+        return _fail(pre["hint"], human=args.human, **{k: v for k, v in pre.items() if k != "hint"})
+
     if args.native:
         final_state = browser.run_all_native(
             args.file_id, runtime=args.runtime, timeout_sec=args.timeout
@@ -455,6 +497,13 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     """Smoke-test: create canary, run print/plot/error cells, report broken selectors."""
     from . import selftest
 
+    # Preflight: a selftest spawns a transient runtime; if we're already at
+    # cap we'd put the user above Pro+'s tolerance even for the ~1 min it runs.
+    cfg = config.load()
+    pre = ledger.preflight(cap=cfg.get("runtime_cap", 2))
+    if pre["status"] == "rate_limited":
+        return _fail(pre["hint"], human=args.human, **{k: v for k, v in pre.items() if k != "hint"})
+
     return _emit(selftest.run(runtime=args.runtime or "cpu"), args.human)
 
 
@@ -479,6 +528,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-images", action="store_true")
     sp.add_argument("--retries", type=int)
     sp.add_argument("--runtime", choices=["cpu", "gpu", "tpu"])
+    sp.add_argument(
+        "--runtime-cap",
+        type=int,
+        dest="runtime_cap",
+        help="max concurrent plugin-spawned runtimes (default 2, under Pro+'s ~3 cap)",
+    )
     sp.add_argument("--reset", action="store_true")
     sp.set_defaults(func=cmd_init)
 
