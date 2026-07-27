@@ -623,9 +623,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--runtime",
         choices=["cpu", "gpu", "tpu"],
-        help="when set to gpu/tpu, append a torch.cuda check (consumes Colab "
-        "quota; currently broken — runtime-change dialog selectors are stale, "
-        "see selectors.py)",
+        help="when set to gpu/tpu, append a torch.cuda check (consumes Colab quota)",
     )
     sp.set_defaults(func=cmd_selftest)
 

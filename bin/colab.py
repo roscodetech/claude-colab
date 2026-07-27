@@ -26,8 +26,13 @@ def _ensure_venv() -> Path:
         return py
     # Run install with the *system* python, then return the freshly built venv.
     print("first run — bootstrapping ~/.claude-colab/.venv (one time)", flush=True)
-    install_script = PLUGIN_ROOT / "scripts" / "install.py"
-    subprocess.check_call([sys.executable, str(install_script)])
+    # Must be `-m`, not a file path: running scripts/install.py directly puts
+    # scripts/ at sys.path[0], so any module there sharing a stdlib name shadows
+    # it for every subsequent import (this cost us `selectors` once already).
+    subprocess.check_call(
+        [sys.executable, "-m", "scripts.install"],
+        env={**os.environ, "PYTHONPATH": str(PLUGIN_ROOT)},
+    )
     return paths.venv_python()
 
 

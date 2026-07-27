@@ -19,7 +19,8 @@ from typing import Any
 
 from filelock import FileLock, Timeout
 
-from . import config, selectors
+from . import colab_selectors as selectors
+from . import config
 from . import paths as _paths
 from .paths import ensure_home
 
