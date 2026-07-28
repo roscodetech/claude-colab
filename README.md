@@ -126,4 +126,7 @@ claude-colab/
 └── tests/                         # offline unit tests
 ```
 
+Branches: **`dev`** is the default and integration branch, **`prod`** is the
+released line. Open PRs against `dev`.
+
 MIT licensed. PRs welcome — selectors will rot, contributions to keep them current especially appreciated. See [CONTRIBUTING.md](CONTRIBUTING.md).
