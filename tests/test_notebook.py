@@ -235,5 +235,5 @@ def test_find_idx_prefers_id_over_index_for_all_digit_ids():
     nb = nbformat.v4.new_notebook()
     nb.cells = [nbformat.v4.new_code_cell("a"), nbformat.v4.new_code_cell("b")]
     nb.cells[0]["id"] = "zzz"
-    nb.cells[1]["id"] = "0"          # id "0" lives at index 1
+    nb.cells[1]["id"] = "0"  # id "0" lives at index 1
     assert notebook._find_idx(nb, "0") == 1
