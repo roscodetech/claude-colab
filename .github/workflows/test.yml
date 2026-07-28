@@ -2,9 +2,9 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    branches: [dev, prod]
   pull_request:
-    branches: [main]
+    branches: [dev, prod]
   workflow_dispatch: {}
 
 # Cancel in-flight runs on the same ref when a new push lands.

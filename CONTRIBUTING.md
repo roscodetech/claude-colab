@@ -35,7 +35,10 @@ CI will run the same checks on every PR.
 
 ## Approval
 
-`main` is protected — merges require review from a code owner ([@roscoekerby](https://github.com/roscoekerby)). Open a PR from a fork; we'll review.
+Branches follow the ROSCODE TECH standard: **`dev`** is the default and the
+integration branch; **`prod`** is the released line. Open PRs against `dev`.
+Both are protected and require the CI checks (pytest on ubuntu/windows x
+py3.11/3.12, plus `ruff check` and `ruff format --check`) to pass.
 
 ## Style
 
