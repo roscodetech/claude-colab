@@ -21,14 +21,14 @@ Before opening a PR:
 - [ ] Tests pass: `pytest tests/`
 - [ ] Lint clean: `ruff check scripts/ tests/ bin/`
 - [ ] Format clean: `ruff format --check scripts/ tests/ bin/` (run `ruff format ...` to fix)
-- [ ] If you changed Colab DOM selectors, bump `SCHEMA_VERSION` in `scripts/selectors.py`
+- [ ] If you changed Colab DOM selectors, bump `SCHEMA_VERSION` in `scripts/colab_selectors.py`
 - [ ] If you added a new command/agent, update `skills/colab/SKILL.md`'s capability map
 
 CI will run the same checks on every PR.
 
 ## Where to start
 
-- **Selector fixes**: `scripts/selectors.py` is one place. Run `/colab-selftest` against your fix to verify.
+- **Selector fixes**: `scripts/colab_selectors.py` is one place. Run `/colab-selftest` against your fix to verify.
 - **New cell types or runtime tricks**: extend `scripts/browser.py` and `scripts/notebook.py`.
 - **Agent prompt improvements**: `agents/colab-{planner,executor,debugger}.md`.
 - **New slash commands**: drop a markdown file in `commands/`, add a CLI subcommand in `scripts/cli.py`.

@@ -14,9 +14,9 @@ import time
 
 from playwright.sync_api import sync_playwright
 
+from . import colab_selectors as sel
 from . import drive, notebook
 from . import paths as _paths
-from . import selectors as sel
 
 
 def main() -> None:

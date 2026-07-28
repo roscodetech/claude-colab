@@ -13,7 +13,8 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from . import browser, drive, notebook, selectors
+from . import browser, drive, notebook
+from . import colab_selectors as selectors
 
 CANARY_CELLS = [
     ("code", "print('hello from claude-colab')"),

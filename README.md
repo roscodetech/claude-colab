@@ -121,7 +121,7 @@ claude-colab/
 │   ├── notebook.py                # nbformat cell CRUD
 │   ├── session_daemon.py          # persistent-session daemon
 │   ├── session_client.py          # client side of IPC protocol
-│   ├── selectors.py               # ALL the brittle Colab DOM selectors
+│   ├── colab_selectors.py         # ALL the brittle Colab DOM selectors
 │   └── selftest.py                # canary notebook for selector drift
 └── tests/                         # offline unit tests
 ```

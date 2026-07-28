@@ -9,8 +9,8 @@ import time
 
 from playwright.sync_api import sync_playwright
 
+from . import colab_selectors as sel
 from . import paths as _paths
-from . import selectors as sel
 
 FILE_ID = "1KS9Auu-NSjQZjOSBwrVrQ9_00lBPrP-G"
 
