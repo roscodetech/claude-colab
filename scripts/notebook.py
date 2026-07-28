@@ -105,7 +105,14 @@ def write(
 
 
 def _find_idx(nb: nbformat.NotebookNode, cell_ref: str | int) -> int:
-    """Resolve a cell_id (str) or index (int) to an integer index."""
+    """Resolve a cell_id (str) or index (int|numeric str) to an integer index.
+
+    argparse hands --cell through as a string, so `--cell 0` arrived here as
+    "0" and never reached the int branch — the CLI advertised index support
+    that was unreachable. IDs are matched FIRST so a notebook containing an
+    all-digit cell id still resolves by id rather than being read as a
+    position.
+    """
     if isinstance(cell_ref, int):
         if cell_ref < 0 or cell_ref >= len(nb.cells):
             raise IndexError(f"cell index {cell_ref} out of range (len={len(nb.cells)})")
@@ -113,6 +120,8 @@ def _find_idx(nb: nbformat.NotebookNode, cell_ref: str | int) -> int:
     for i, cell in enumerate(nb.cells):
         if cell.get("id") == cell_ref:
             return i
+    if isinstance(cell_ref, str) and cell_ref.lstrip("-").isdigit():
+        return _find_idx(nb, int(cell_ref))
     raise KeyError(f"cell id not found: {cell_ref!r}")
 
 

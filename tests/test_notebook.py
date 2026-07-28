@@ -207,3 +207,33 @@ def test_normalize_handles_missing_metadata():
     ]
     notebook._normalize_cell_ids(nb)
     assert nb.cells[0]["id"]  # got a fresh one
+
+
+def test_find_idx_accepts_numeric_string_from_argparse():
+    """argparse passes --cell through as a string, so "0" must resolve as an
+    index — the CLI documented index support that was unreachable."""
+    import nbformat
+
+    from scripts import notebook
+
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [nbformat.v4.new_code_cell("a"), nbformat.v4.new_code_cell("b")]
+    nb.cells[0]["id"] = "aaa111"
+    nb.cells[1]["id"] = "bbb222"
+    assert notebook._find_idx(nb, "1") == 1
+    assert notebook._find_idx(nb, 1) == 1
+    assert notebook._find_idx(nb, "bbb222") == 1
+
+
+def test_find_idx_prefers_id_over_index_for_all_digit_ids():
+    """A notebook can contain an all-digit cell id; it must win over the
+    positional reading, or the wrong cell gets edited silently."""
+    import nbformat
+
+    from scripts import notebook
+
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [nbformat.v4.new_code_cell("a"), nbformat.v4.new_code_cell("b")]
+    nb.cells[0]["id"] = "zzz"
+    nb.cells[1]["id"] = "0"          # id "0" lives at index 1
+    assert notebook._find_idx(nb, "0") == 1
